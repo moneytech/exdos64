@@ -630,7 +630,7 @@ enable_acpi:
 	jnz .already_enabled
 
 	cmp [acpi_fadt.smi_command_port], 0
-	je .already_enabled
+	je .no_smi
 
 	mov edx, [acpi_fadt.smi_command_port]
 	mov al, [acpi_fadt.acpi_enable]
@@ -682,6 +682,15 @@ enable_acpi:
 
 	ret
 
+.no_smi:
+	mov rsi, .no_smi_msg
+	call kprint
+
+	mov rsi, .no_smi_msg
+	call boot_error_early
+
+	jmp $
+
 .enable_error:
 	mov rsi, .enable_error_msg
 	call kprint
@@ -707,7 +716,8 @@ enable_acpi:
 .no_fadt_msg			db "[acpi] FACP table is not present or corrupt, will not be able to manage power.",10,0
 .acpi_event			db "[acpi] ACPI event register size is ",0
 .acpi_event2			db " bytes.",10,0
-.enable_error_msg		db "[acpi] failed to enable ACPI.",10,0
+.enable_error_msg		db "[acpi] ACPI hardware is not responding.",10,0
+.no_smi_msg			db "[acpi] ACPI is not enabled and SMI command port is not present.",10,0
 .cmos_sec			db 0
 
 ACPI_EVENT_TIMER		= 1

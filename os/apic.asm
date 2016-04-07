@@ -451,8 +451,8 @@ show_apic_table:
 .starting_msg			db "[apic] showing contents of ACPI MADT table:",10,0
 .found_lapic_msg		db "[apic] local APIC base is 0x",0
 .prefix				db "[apic] ",0
-.lapic_msg			db "local APIC, ID ",0
-.ioapic_msg			db "I/O APIC, ID ",0
+.lapic_msg			db "local APIC, ID 0x",0
+.ioapic_msg			db "I/O APIC, ID 0x",0
 .flags_msg			db ", flags 0x",0
 .gsi_msg			db ", GSI ",0
 .base_msg			db ", base 0x",0

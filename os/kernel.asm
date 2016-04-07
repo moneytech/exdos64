@@ -69,14 +69,6 @@ kmain16:
 	mov eax, 0
 	mov cr4, eax			; disable all unwanted features...
 
-	; ensure the PC has at least 512 KB RAM
-	mov ax, 0
-	int 0x12
-	jc detect_memory.too_little
-
-	cmp ax, 0x200
-	jle detect_memory.too_little
-
 	call check_cpu			; make sure we have a 64-bit capable CPU
 	call detect_memory		; uses BIOS E820 to detect memory
 	call enable_a20			; enable A20 gate
@@ -157,11 +149,9 @@ kmain16:
 	call do_vbe			; enable the VBE framebuffer
 
 	; notify the BIOS that we're going to run in long mode
-	;mov eax, 0xEC00
-	;mov ebx, 2
-	;int 0x15			; this function doesn't seem to do anything
-					; besides, the BIOS doesn't need to know what we're doing --
-					; -- because we don't depend on BIOS for anything
+	mov eax, 0xEC00
+	mov ebx, 2
+	int 0x15
 
 	sti
 	mov al, 0x8B			; disable NMI and CMOS interrupts
