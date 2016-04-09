@@ -182,6 +182,9 @@ syscall_entry_point:
 	mov gs, ax
 	pop rax
 
+	cmp [is_driver_running], 1
+	je driver_api				; driver API ;)
+
 	cmp [is_enter_ring0], 1
 	je .ring0
 

@@ -35,5 +35,6 @@
 17 March, 2016			Fixed bugs in ATA driver; now runs on real SATA hardware under IDE emulation
 19 March, 2016			Added support for drawing into the window canvas
 1 April, 2016			16-bit framebuffer performance improvements
+8 April, 2016			Added a test driver just to demonstrate running drivers in userspace
 
 

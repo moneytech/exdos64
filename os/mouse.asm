@@ -24,15 +24,22 @@ db "PS/2 mouse driver",0
 
 align 16			; for faster memory access
 mouse_x				dq 0
+align 16
 mouse_y				dq 0
+align 16
 mouse_status			dq 0
+align 16
 old_mouse_x			dq 0
+align 16
 old_mouse_y			dq 0
+align 16
 old_mouse_status		dq 0
 
 align 16
 mouse_width			dq 0
+align 16
 mouse_height			dq 0
+align 16
 mouse_color			dd 0
 align 16
 is_mouse_visible		db 0
@@ -336,10 +343,23 @@ mouse_irq:
 	cmp [is_wm_running], 1
 	je .handle_wm_event
 
+.just_redraw:
 	call redraw_cursor
 	jmp .done
 
 .handle_wm_event:
+	test [.data], 1
+	jnz .handle_event
+
+	test [.data], 2
+	jnz .handle_event
+
+	test [.data], 4
+	jnz .handle_event
+
+	jmp .just_redraw
+
+.handle_event:
 	mov rax, WM_EVENT_MOUSE
 	call wm_event_handler
 
@@ -348,15 +368,15 @@ mouse_irq:
 	popaq
 	iretq
 
-align 8
+align 16
 .status				db 0
-align 8
+align 16
 .data				db 0
-align 8
+align 16
 .x				db 0
-align 8
+align 16
 .y				db 0
-align 8
+align 16
 .scroll				db 0
 
 ; get_mouse_status:
@@ -375,9 +395,9 @@ get_mouse_status:
 
 	; start by waiting for an IRQ
 
-.wait_for_irq:
-	cmp [mouse_irq.status], 0
-	jne .wait_for_irq
+;.wait_for_irq:
+;	cmp [mouse_irq.status], 0
+;	jne .wait_for_irq
 
 	; here, we know an IRQ happened
 

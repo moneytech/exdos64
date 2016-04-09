@@ -28,10 +28,10 @@ wallpaper:
 				dw 2016
 .reserved2			dw 0
 
-task:
-.filename			db "test    exe"		; 0
+kconfig:
+.filename			db "kernel  cfg"		; 0
 .reserved1			db 0				; 11
-.lba_sector			dd 1000				; 12
+.lba_sector			dd 2000				; 12
 .size_sectors			dd 1				; 16
 .size_bytes			dd 1*512			; 20
 .time				db 0
@@ -41,17 +41,18 @@ task:
 				dw 2016
 .reserved2			dw 0
 
-task2:
-.filename			db "test2   exe"		; 0
+test_driver:
+.filename			db "test    sys"		; 0
 .reserved1			db 0				; 11
-.lba_sector			dd 1001				; 12
-.size_sectors			dd 1				; 16
-.size_bytes			dd 1*512			; 20
+.lba_sector			dd 2001				; 12
+.size_sectors			dd 2				; 16
+.size_bytes			dd 2*512			; 20
 .time				db 0
 				db 0
 .date				db 5
 				db 1
 				dw 2016
 .reserved2			dw 0
+
 
 

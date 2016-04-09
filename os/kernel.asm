@@ -306,7 +306,7 @@ kmain64:
 	call init_user				; initialize usermode stuff
 	;call init_tasking			; start multitasking
 	call random_seed			; seed the random number generator
-	;call load_drivers			; loads all boot-time drivers
+	call load_drivers			; loads all boot-time drivers
 	call enable_interrupts			; enable interrupts on all CPUs
 
 	jmp gui

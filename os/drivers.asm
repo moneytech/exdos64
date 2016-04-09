@@ -207,7 +207,7 @@ load_driver:
 	mov rsi, .starting_msg2
 	call kprint
 
-	mov rax, DRIVER_LOAD_ADDRESS+APPLICATION_HEADER.program_name
+	mov rax, DRIVER_LOAD_ADDRESS+APPLICATION_HEADER.driver_hardware
 	mov rsi, [rax]
 	call kprint
 
@@ -227,7 +227,7 @@ load_driver:
 	mov rbp, [rax]
 	push rbp
 	mov rsi, [.filename]
-	mov rax, 1
+	mov rax, 0			; call function 0 of the driver
 	ret
 
 .done:
@@ -329,7 +329,6 @@ exit_driver:
 
 outportb:
 	out dx, al
-	call iowait
 	ret
 
 ; outportw:
@@ -340,7 +339,6 @@ outportb:
 
 outportw:
 	out dx, ax
-	call iowait
 	ret
 
 ; outportd:
@@ -351,7 +349,6 @@ outportw:
 
 outportd:
 	out dx, eax
-	call iowait
 	ret
 
 ; inportb:
@@ -361,7 +358,6 @@ outportd:
 
 inportb:
 	in al, dx
-	call iowait
 	ret
 
 ; inportw:
@@ -371,7 +367,6 @@ inportb:
 
 inportw:
 	in ax, dx
-	call iowait
 	ret
 
 ; inportd:
@@ -381,7 +376,6 @@ inportw:
 
 inportd:
 	in eax, dx
-	call iowait
 	ret
 
 ; install_driver_irq:
