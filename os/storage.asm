@@ -14,13 +14,14 @@ db "Generic storage abstraction layer",0
 
 ;; Functions:
 ; init_storage
+; get_drive_type
 ; read_sectors
 
 MAX_DISKS		= 40				; OS can handle up to 40 physical drives
 
-list_of_disks:		times MAX_DISKS dw 0xFFFF	; Byte 0 is 0 for ATA, 1 for AHCI, 2 for MEMDISK, 3 for USB
-							; Byte 1 is drive number for ATA, port for AHCI, reserved for MEMDISK
+list_of_disks:		times MAX_DISKS dw 0xFFFF
 number_of_drives	db 0
+bootcd			db 0		; this flag is set to one when we boot from a CD
 
 ; init_storage:
 ; Detects mass storage drives
@@ -29,10 +30,10 @@ init_storage:
 	mov rsi, .msg
 	call kprint
 
-	call ata_detect			; detect ATA drives
+	call memdisk_detect		; detect MEMDISK memory-mapped drives
+	call ata_detect			; detect ATA/ATAPI drives
 	;call ahci_detect		; detect AHCI devices
 	;call nvme_detect		; detect NVMe devices -- will be implemented after I have PCI-E driver
-	call memdisk_detect		; detect MEMDISK memory-mapped drives
 
 	mov rsi, .done_msg
 	call kprint
@@ -42,106 +43,153 @@ init_storage:
 	mov rsi, .done_msg2
 	call kprint
 
-	; Now, we need to determine the boot disk
-	mov rcx, MAX_DISKS
-	mov [.current_disk], 0
+	cmp [number_of_drives], 0
+	je .no_bootdrive
 
-.find_bootdisk_loop:
-	push rcx
-	mov al, [.current_disk]
+	cmp [memdisk_phys], 0
+	jne .memdisk
+
+	cmp [bootdisk], 0xE0
+	je .cd
+
+.hdd:
+	mov [.drive], 0
+
+.check_hdd:
+	mov al, [.drive]
+	cmp al, MAX_DISKS-1
+	jg .no_bootdrive
+
+	call get_drive_type
+	cmp rax, 0
+	jne .next_hdd
+
+	mov al, [.drive]
 	mov rbx, 0
-	mov rdi, mbr_tmp
 	mov rcx, 1
+	mov rdi, mbr_tmp
 	call read_sectors
+	jc .next_hdd
 
-	mov rsi, mbr_tmp
-	mov rdi, bootdrive_mbr
-	mov rcx, 512
-	rep cmpsb
-	je .found_bootdisk
+	;mov rsi, bootdrive_mbr
+	;mov rdi, mbr_tmp
+	;mov rcx, 512
+	;rep cmpsb
+	;je .found_hdd
 
-.next:
-	inc [.current_disk]
-	pop rcx
-	loop .find_bootdisk_loop
-	jmp .no_bootdisk
+.next_hdd:
+	;inc [.drive]
+	;jmp .check_hdd
 
-.found_bootdisk:
-	mov al, [.current_disk]
-	mov [bootdisk], al
-
-	mov rsi, .found_bootdisk_msg
+.found_hdd:
+	mov rsi, .found_msg
+	call kprint
+	mov rsi, .ata_msg
 	call kprint
 
-	movzx rax, [.current_disk]
+	mov al, [.drive]
+	mov [bootdisk], al
+
+	jmp .done
+
+.cd:
+	mov rsi, list_of_disks
+
+.check_cd:
+	cmp byte[rsi], 0xFF
+	je .no_bootdrive
+
+	test word[rsi], 0x8000
+	jz .next_cd
+
+	sub rsi, list_of_disks
+	shr rsi, 1
+	mov rax, rsi
+	mov [bootdisk], al
+	mov rsi, .found_msg
+	call kprint
+	mov rsi, .atapi_msg
+	call kprint
+
+	jmp .done
+
+.next_cd:
+	add rsi, 2
+	jmp .check_cd
+
+.memdisk:
+	mov rsi, .found_msg
+	call kprint
+	mov rsi, .memdisk_msg
+	call kprint
+
+	mov [bootdisk], 0
+	jmp .done
+
+.done:
+	ret
+
+.no_bootdrive:
+	mov rsi, .no_msg
+	call kprint
+
+	mov rsi, .no_msg
+	call start_debugging
+
+	cli
+	hlt
+
+.msg				db "[storage] detecting storage devices...",10,0
+.done_msg			db "[storage] total of ",0
+.done_msg2			db " drives onboard.",10,0
+.no_msg				db "[storage] unable to access the boot drive.",10,0
+.found_msg			db "[storage] found boot drive: ",0
+.memdisk_msg			db "memory-mapped MEMDISK drive.",10,0
+.ata_msg			db "ATA hard disk.",10,0
+.atapi_msg			db "ATAPI CD/DVD drive.",10,0
+.drive				db 0
+
+; get_drive_type:
+; Returns information for a specified drive
+; In\	AL = Logical disk number
+; Out\	RAX = 0 for ATA, 1 for ATAPI, 2 for MEMDISK, -1 if not present
+
+get_drive_type:
+	cmp al, MAX_DISKS-1
+	jg .no
+
+	and rax, 0xFF
 	shl rax, 1
 	add rax, list_of_disks
+
+	cmp byte[rax], 0xFF
+	je .no
+	test word[rax], 0x8000
+	jnz .atapi
 
 	cmp byte[rax], 0
 	je .ata
 
-	cmp byte[rax], 1
-	je .ahci
-
 	cmp byte[rax], 2
 	je .memdisk
 
-.ata:
-	push rax
-	mov rsi, .ata_msg
-	call kprint
-	pop rax
-	movzx rdx, byte[rax+1]
-	mov rax, rdx
-	call int_to_string
-	call kprint
-	mov rsi, newline
-	call kprint
+	jmp .no
 
-	pop rcx
+.ata:
+	mov rax, 0
 	ret
 
-.ahci:
-	push rax
-	mov rsi, .ahci_msg
-	call kprint
-	pop rax
-	movzx rdx, byte[rax+1]
-	mov rax, rdx
-	call int_to_string
-	call kprint
-	mov rsi, newline
-	call kprint
-
-	pop rcx
+.atapi:
+	mov rax, 1
 	ret
 
 .memdisk:
-	mov rsi, .memdisk_msg
-	call kprint
-
-	pop rcx
+	mov rax, 2
 	ret
 
-.no_bootdisk:
-	mov rsi, .bootdisk_error
-	call kprint
-
-	mov rsi, .bootdisk_error
-	call start_debugging
-
-	jmp $
-
-.msg				db "[storage] initializing mass storage devices...",10,0
-.done_msg			db "[storage] total of ",0
-.done_msg2			db " hard disks onboard.",10,0
-.bootdisk_error			db "[storage] unable to access the boot disk!",10,0
-.found_bootdisk_msg		db "[storage] found boot disk: ",0
-.ata_msg			db "ATA drive number ",0
-.ahci_msg			db "SATA device on AHCI port number ",0
-.memdisk_msg			db "memory-mapped MEMDISK drive",10,0
-.current_disk			db 0
-.device				db 0
+.no:
+	mov rax, -1
+	ret
 
 ; read_sectors:
 ; Generic read sectors from any type of disk
@@ -178,6 +226,17 @@ read_sectors:
 	jmp .error		; for now, because there's still no ATAPI, USB, or NVMe support
 
 .ata:
+	test word[rax], 0x8000
+	jnz .atapi_sector
+
+.ata_sector:
+	mov [.sector_size], 512
+	jmp .ata_start
+
+.atapi_sector:
+	mov [.sector_size], 2048		; default sector size of CDs
+
+.ata_start:
 	cmp [.count], 0
 	je .ata_done
 
@@ -203,10 +262,13 @@ read_sectors:
 	call ata_read
 	jc .error
 
-	add [.buffer], 512*255
+	mov rax, [.sector_size]
+	mov rbx, 255
+	mul rbx
+	add [.buffer], rax
 	add [.lba], 255
 	sub [.count], 255
-	jmp .ata
+	jmp .ata_start
 
 .ahci:
 	;mov dl, [rax+1]	; AHCI port
@@ -233,5 +295,8 @@ read_sectors:
 .lba				dq 0
 .count				dq 0
 .buffer				dq 0
+.sector_size			dq 0
+
+
 
 

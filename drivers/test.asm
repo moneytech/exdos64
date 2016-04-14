@@ -37,6 +37,9 @@ main:
 	mov rsi, starting_msg
 	driver_api kprint
 
+	; Comment out this line to show a driver demo
+	driver_api exit_driver
+
 	; Detect the BGA
 	mov cx, 0
 	call bga_read_register

@@ -8,1447 +8,718 @@
 ;;						;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-use64
-
-db "ATA/ATAPI disk driver",0
+db "ATA/ATAPI Disk Driver",0
 
 ;; Functions:
 ; ata_detect
-; ata_identify_drive
+; ata_irq
 ; ata_delay
+; ata_identify
 ; ata_reset
 ; ata_read
-; ata_write
-; ata_read_lba48
 ; ata_read_lba28
-; ata_write_lba48
-; ata_write_lba28
-; ata_detect_secondary
-; ata_identify_drive_seconaary
-; ata_delay_secondary
+; atapi_read
 
-ATA_MAXIMUM_RETRIES		= 5			; maximum number of times to retry disk operations before aborting
+pci_ide_bus				db 0
+pci_ide_device				db 0
+pci_ide_function			db 0
 
-pci_ata_bus			db 0
-pci_ata_device			db 0
-pci_ata_function		db 0
+ata_primary_base			dw 0x1F0
+ata_secondary_base			dw 0x170
+atapi_packet:				times 12 db 0
 
-ata_master			db 0
-ata_slave			db 0
-ata_master_size			dq 0
-ata_slave_size			dq 0
-ata_master_size_mb		dq 0			; MB
-ata_slave_size_mb		dq 0
-ata_io_port			dw 0x1F0		; default primary bus I/O port
-ata_io_port_status		dw 0x3F6		; default primary bus alternative status
-ata_io_port2			dw 0x170		; default secondary bus I/O port
-ata_io_port2_status		dw 0x376		; default secondary bus alternative status
-ata_secondary_present		db 0
-ata_secondary_disks		db 0
-
-ata_master_model:		times 41 db 0
-ata_slave_model:		times 41 db 0
-ata_master2_model:		times 41 db 0
-ata_slave2_model:		times 41 db 0
+; Command List
+ATA_IDENTIFY				= 0xEC
+ATA_READ_LBA28				= 0x20
+ATA_PACKET				= 0xA0
+ATA_IDENTIFY_PACKET			= 0xA1
+ATAPI_READ				= 0xA8
 
 ; ata_detect:
-; Detect ATA drives
+; Detects ATA/ATAPI drives
 
 ata_detect:
-	; ensure interrupts are disabled when we do this..
+	mov rsi, .starting_msg
+	call kprint
+
 	call disable_interrupts
 
+	; install IRQ handlers
 	mov al, 14
 	mov rbp, ata_irq
-	call install_irq				; install ATA IRQ handlers
+	call install_irq
 
 	mov al, 15
 	mov rbp, ata_irq
 	call install_irq
 
-	mov rsi, .pci_start_msg
-	call kprint
-
+	; look for PCI IDE controller
 	mov ax, 0x0101
-	call pci_get_device_class			; find PCI IDE controller
+	call pci_get_device_class
+
 	cmp ax, 0xFFFF
-	je .try_isa
+	je .no_ata
 
-	mov [pci_ata_bus], al
-	mov [pci_ata_device], ah
-	mov [pci_ata_function], bl
+	mov [pci_ide_bus], al
+	mov [pci_ide_device], ah
+	mov [pci_ide_function], bl
 
-	mov rsi, .pci_done_msg
+	mov rsi, .found_msg
 	call kprint
 
-	mov al, [pci_ata_bus]
+	mov al, [pci_ide_bus]
 	call hex_byte_to_string
 	call kprint
 	mov rsi, .colon
 	call kprint
-	mov al, [pci_ata_device]
+	mov al, [pci_ide_device]
 	call hex_byte_to_string
 	call kprint
 	mov rsi, .colon
 	call kprint
-	mov al, [pci_ata_function]
+	mov al, [pci_ide_function]
 	call hex_byte_to_string
 	call kprint
 	mov rsi, newline
 	call kprint
 
-	mov al, [pci_ata_bus]
-	mov ah, [pci_ata_device]
-	mov bl, [pci_ata_function]
-	mov bh, 0x10			; BAR0
+.get_primary_io:
+	mov al, [pci_ide_bus]
+	mov ah, [pci_ide_device]
+	mov bl, [pci_ide_function]
+	mov bh, 0x14			; BAR0
 	call pci_read_dword
 
-	cmp eax, 1
-	jg .not_standard_io
+	cmp ax, 1
+	jle .got_primary
 
-	jmp .got_port
+	and ax, 0xFFFC
+	mov [ata_primary_base], ax
 
-.not_standard_io:
-	and eax, 0xFFFFFFFC
-	mov [ata_io_port], ax
-	add ax, 0x206
-	mov [ata_io_port_status], ax
-	jmp .got_port
-
-.try_isa:
-	mov rsi, .isa_start_msg
+.got_primary:
+	mov rsi, .primary_msg
 	call kprint
-
-	mov dx, 0x1F7			; ATA status port -- hopefully!
-	in al, dx
-	cmp al, 0xFF			; is there a drive?
-	je .no_ata			; no ATA controllers found
-
-	mov rsi, .isa_done_msg
-	call kprint
-
-.got_port:
-	mov rsi, .got_port_msg
-	call kprint
-	mov ax, [ata_io_port]
+	mov ax, [ata_primary_base]
 	call hex_word_to_string
 	call kprint
 	mov rsi, newline
 	call kprint
 
-	; First, let's reset both drives on the bus
-	call ata_reset
+.get_secondary_io:
+	mov al, [pci_ide_bus]
+	mov ah, [pci_ide_device]
+	mov bl, [pci_ide_function]
+	mov bh, 0x18			; BAR1
+	call pci_read_dword
 
-	; Now, let's identify the drives
-	mov al, 0xA0			; Master drive
-	mov rdi, ata_identify_master
-	call ata_identify_drive
-	jc .identify_slave
+	cmp ax, 1
+	jle .got_secondary
 
-	mov [ata_master], 1
-	mov rdi, [.list_of_disks]
-	mov word[rdi], 0
-	add [.list_of_disks], 2
-	inc [number_of_drives]
+	and ax, 0xFFFC
+	mov [ata_secondary_base], ax
 
-.identify_slave:
-	mov al, 0xB0			; Slave drive
-	mov rdi, ata_identify_slave
-	call ata_identify_drive
-	jc .finish_detecting
-
-	mov [ata_slave], 1
-	mov rdi, [.list_of_disks]
-	mov word[rdi], 0x100
-	add [.list_of_disks], 2
-	inc [number_of_drives]
-
-.finish_detecting:
-	cmp [number_of_drives], 0
-	je .no_disks
-
-.show_master_info:
-	cmp [ata_master], 0
-	je .dont_show_master
-
-	mov rsi, .master_info
+.got_secondary:
+	mov rsi, .secondary_msg
 	call kprint
-
-	mov rsi, ata_identify_master.model
-	mov rdi, ata_master_model
-	mov rcx, 40
-	rep movsb
-
-	mov rsi, ata_master_model
-	call convert_string_endianness
-	call trim_string
+	mov ax, [ata_secondary_base]
+	call hex_word_to_string
 	call kprint
-
-	mov rsi, .close
-	call kprint
-
-	test word[ata_identify_master+166], 0x400
-	jnz .master_lba48
-
-	cmp dword[ata_identify_master+120], 0
-	jne .master_lba28
-
-	mov rsi, newline
-	call kprint
-	jmp .show_slave_info
-
-.master_lba48:
-	mov rsi, .lba48
-	call kprint
-	jmp .show_slave_info
-
-.master_lba28:
-	mov rsi, .lba28
-	call kprint
-	jmp .show_slave_info
-
-.show_slave_info:
-	cmp [ata_slave], 0
-	je .dont_show_slave
-
-	mov rsi, .slave_info
-	call kprint
-
-	mov rsi, ata_identify_slave.model
-	mov rdi, ata_slave_model
-	mov rcx, 40
-	rep movsb
-
-	mov rsi, ata_slave_model
-	call convert_string_endianness
-	call trim_string
-	call kprint
-
-	mov rsi, .close
-	call kprint
-
-	test word[ata_identify_slave+166], 0x400
-	jnz .slave_lba48
-
-	cmp dword[ata_identify_slave+120], 0
-	jne .slave_lba28
-
 	mov rsi, newline
 	call kprint
 
-	;call ata_detect_secondary
-	ret
+.identify_devices:
+	; detect and identify the devices
+	mov al, [.device]
+	mov ah, [.channel]
+	mov rdi, ata_identify_data
+	call ata_identify
+	jc .next_device
 
-.slave_lba48:
-	mov rsi, .lba48
-	call kprint
+	movzx rdi, [number_of_drives]
+	shl rdi, 1
+	add rdi, list_of_disks
+	mov byte[rdi], 0		; tell the storage abstraction layer that we're using ATA
+	inc rdi
 
-	;call ata_detect_secondary
-	ret
+	mov ah, [.channel]
+	mov al, [.device]
+	shl ah, 4
+	or al, ah			; high nibble: channel; low nibble: device
+	shl bl, 7
+	or al, bl			; if bit 7 (value 0x80) is set, this is an ATAPI device
+	stosb
 
-.slave_lba28:
-	mov rsi, .lba28
-	call kprint
+	inc [number_of_drives]
 
-	;call ata_detect_secondary
-	ret
+.next_device:
+	inc [.device]
+	cmp [.device], 2
+	jge .next_channel
+	jmp .identify_devices
 
-.dont_show_master:
-	mov rsi, .no_master_msg
-	call kprint
-	jmp .show_slave_info
+.next_channel:
+	mov [.device], 0
+	inc [.channel]
+	cmp [.channel], 2
+	jge .done
+	jmp .identify_devices
 
-.dont_show_slave:
-	mov rsi, .no_slave_msg
-	call kprint
-
-	;call ata_detect_secondary
+.done:
 	ret
 
 .no_ata:
-	mov rsi, .no_ata_msg
+	mov rsi, .no_msg
 	call kprint
 
 	ret
 
-.no_disks:
-	mov rsi, .no_drive_msg
-	call kprint
-
-	ret
-
-.pci_start_msg				db "[ata] looking for PCI IDE controller...",10,0
-.pci_done_msg				db "[ata] done, found IDE controller at PCI slot ",0
+.starting_msg				db "[ata] detecting ATA/ATAPI drives...",10,0
+.no_msg					db "[ata] PCI IDE controller not present.",10,0
+.found_msg				db "[ata] found IDE controller at PCI slot ",0
 .colon					db ":",0
-.isa_start_msg				db "[ata] not found, looking for ISA ATA controller...",10,0
-.isa_done_msg				db "[ata] done, found ISA ATA controller.",10,0
-.got_port_msg				db "[ata] base I/O port is 0x",0
-.no_ata_msg				db "[ata] no IDE/ATA controllers present...",10,0
-.no_drive_msg				db "[ata] ATA controller found, but with no disk drives attached.",10,0
-.master_info				db "[ata] master hard disk model is '",0
-.slave_info				db "[ata] slave hard disk model is '",0
-.no_master_msg				db "[ata] master hard disk is not present.",10,0
-.no_slave_msg				db "[ata] slave hard disk is not present.",10,0
-.close					db "' ",0
-.lba48					db "with LBA48",10,0
-.lba28					db "with LBA28",10,0
-.list_of_disks				dq list_of_disks
-
-; ata_delay:
-; Waits for an ATA I/O to complete
-
-ata_delay:
-	mov dx, [ata_io_port]
-	add dx, 7
-
-	in al, dx
-	in al, dx
-	in al, dx
-	in al, dx
-
-	ret
-
-; ata_identify_drive:
-; Identifies an ATA drive
-; In\	AL = Drive number (0xA0 for master, 0xB0 for slave)
-; In\	RDI = 512-byte buffer to store the data
-; Out\	RFLAGS = Carry set on error
-
-ata_identify_drive:
-	mov [.buffer], rdi
-
-	call ata_reset
-
-	mov dx, [ata_io_port]
-	add dx, 6
-	out dx, al
-	call ata_delay
-
-	mov dx, [ata_io_port]
-	add dx, 2
-	mov al, 0
-	out dx, al
-
-	add dx, 1		; 3
-	mov al, 0
-	out dx, al
-	add dx, 1		; 4
-	mov al, 0
-	out dx, al
-	add dx, 1		; 5
-	out dx, al
-	;call iowait
-
-	mov al, 0xEC		; IDENTIFY command
-	mov dx, [ata_io_port]
-	add dx, 7
-	out dx, al
-	call iowait
-
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	cmp al, 0
-	je .fail
-
-.wait_for_ready:
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	cmp al, 0
-	je .fail
-
-	test al, 0x80
-	jz .check_if_ata
-	test al, 8
-	jnz .start_reading
-
-	test al, 1			; ERR
-	jnz .fail
-	test al, 0x20			; drive fault
-	jnz .fail
-
-	jmp .wait_for_ready
-
-.check_if_ata:
-	mov dx, [ata_io_port]
-	add dx, 4
-	in al, dx
-	cmp al, 0
-	jne .fail
-
-	mov dx, [ata_io_port]
-	add dx, 5
-	in al, dx
-	cmp al, 0
-	jne .fail
-
-.wait_again:
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	test al, 8			; DRQ
-	jnz .start_reading
-
-	test al, 1			; ERR
-	jnz .fail
-	jmp .wait_again
-
-.start_reading:
-	mov rdi, [.buffer]
-	mov dx, [ata_io_port]
-	mov rcx, 256
-	rep insw
-	call ata_delay
-
-	clc
-	ret
-
-.fail:
-	stc
-	ret
-
-.buffer				dq 0
+.primary_msg				db "[ata] primary channel base I/O port is 0x",0
+.secondary_msg				db "[ata] secondary channel base I/O port is 0x",0
+.channel				db 0
+.device					db 0
 
 ; ata_irq:
 ; ATA IRQ handler
 
 ata_irq:
-	call send_eoi		; ATA IRQ handler doesn't do anything because we use polling
+	mov [.happened], 1
+	call send_eoi
 	iretq
 
-; ata_reset:
-; Resets the ATA drives
+align 32
+.happened				db 0
 
-ata_reset:
+; ata_delay:
+; Creates a delay
+
+ata_delay:
 	pushaq
 
-	; reset the primary bus
-	mov al, 6
-	mov dx, [ata_io_port_status]
-	out dx, al
+	mov dx, [ata_primary_base]
+	add dx, 7
+	in al, dx
+	in al, dx
+	in al, dx
+	in al, dx
 
-	call ata_delay
-
-	mov al, 2
-	mov dx, [ata_io_port_status]
-	out dx, al
+	mov dx, [ata_secondary_base]
+	add dx, 7
+	in al, dx
+	in al, dx
+	in al, dx
+	in al, dx
 
 	popaq
 	ret
 
-	; if the secondary bus is present, reset it as well
-	cmp [ata_secondary_disks], 0
-	je .quit
+; ata_identify:
+; Identifies an ATA device
+; In\	AH = Channel
+; In\	AL = Device
+; In\	RDI = Location to store identify data
+; Out\	RFLAGS.CF = 0 if device is present
+; Out\	BL = 0 if device is an HDD, 1 if it is an ATAPI device
+
+ata_identify:
+	mov [.channel], ah
+	mov [.device], al
+	mov [.data], rdi
 
-	mov al, 6
-	mov dx, [ata_io_port2_status]
-	out dx, al
-	call iowait
-
-	mov al, 2
-	mov dx, [ata_io_port2_status]
-	out dx, al
-
-.quit:
-	popaq
-	ret
-
-; ata_read:
-; Reads sectors from ATA device
-; In\	AL = Drive number (0 for master, 1 for slave)
-; In\	RDI = Buffer to read sectors
-; In\	RBX = LBA sector
-; In\	RCX = Sectors to read
-; Out\	RFLAGS = Carry clear on success
-
-ata_read:
-	call enable_interrupts
-
-	pushaq
-
-	mov rsi, .msg
-	;call kprint
-
-	popaq
-	pushaq
-	mov rax, rcx
-	call int_to_string
-	;call kprint
-
-	mov rsi, .msg2
-	;call kprint
-
-	popaq
-
-	cmp al, 0
-	je .master
-
-.slave:
-	;test word[ata_identify_slave+166], 0x400	; is LBA48 supported?
-	;jnz ata_read_lba48				; yes -- use it
-
-	;cmp dword[ata_identify_slave+120], 0		; nope, is LBA28 supported?
-	;jne ata_read_lba28				; yes -- use it
-
-	; use LBA48 only when necessary; LBA28 is faster because it uses less I/O bandwidth ;)
-	cmp rbx, 0xFFFFFFF-0x100
-	jge ata_read_lba48
-	jmp ata_read_lba28
-
-.master:
-	;test word[ata_identify_master+166], 0x400
-	;jnz ata_read_lba48
-
-	;cmp dword[ata_identify_master+120], 0
-	;jne ata_read_lba28
-
-	cmp rbx, 0xFFFFFFF-0x100
-	jge ata_read_lba48
-	jmp ata_read_lba28
-
-.msg			db "[ata] reading ",0
-.msg2			db " sectors.",10,0
-
-; ata_read_lba48:
-; Reads ATA disk in LBA48 mode
-
-ata_read_lba48:
-	mov [.drive], al
-	mov [.lba], rbx
-	mov [.count], rcx
-	mov [.buffer], rdi
-	mov [.current_try], 0
-
-.retry:
-	cmp [.current_try], ATA_MAXIMUM_RETRIES
-	je .quit_fail
-
-	mov rsi, .msg
-	;call kprint
-
-	mov [.current_count], 0
-	call ata_reset
-
-	mov al, [.drive]
-	shl al, 4
-	or al, 0x40
-	mov dx, [ata_io_port]
-	add dx, 6
-	out dx, al				; select drive
-	call ata_delay
-
-	mov al, 0
-	mov dx, [ata_io_port]
-	add dx, 1
-	out dx, al
-	;call iowait
-
-	mov rax, [.count]
-	shr rax, 8				; sector count high
-	mov dx, [ata_io_port]
-	add dx, 2
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 24
-	mov dx, [ata_io_port]
-	add dx, 3
-	out dx, al				; LBA
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 32
-	mov dx, [ata_io_port]
-	add dx, 4
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 40
-	mov dx, [ata_io_port]
-	add dx, 5
-	out dx, al
-	;call iowait
-
-	mov rax, [.count]
-	mov dx, [ata_io_port]
-	add dx, 2
-	out dx, al				; sector count low
-	;call iowait
-
-	mov rax, [.lba]
-	mov dx, [ata_io_port]
-	add dx, 3
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 8
-	mov dx, [ata_io_port]
-	add dx, 4
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 16
-	mov dx, [ata_io_port]
-	add dx, 5
-	out dx, al
-	;call iowait
-
-	mov al, 0x24			; 48-bit LBA read
-	mov dx, [ata_io_port]
-	add dx, 7
-	out dx, al
-	call iowait
-
-	mov rcx, 0
-	not rcx
-
-.check_for_error:
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	test al, 1
-	jnz .fail
-	test al, 0x20
-	jnz .fail
-	test al, 8
-	jnz .start_reading
-
-	dec rcx
-	cmp rcx, 0
-	je .fail
-	jmp .check_for_error
-
-.start_reading:
-	mov dx, [ata_io_port]
-	mov rdi, [.buffer]
-	mov rcx, 256
-	rep insw			; read one sector
-	mov [.buffer], rdi
-	inc [.current_count]
-	call ata_delay			; give the drive time to refresh itself...
-
-	mov rcx, [.count]
-	cmp [.current_count], rcx
-	jge .done
-
-	mov rcx, 0
-	not rcx
-	jmp .check_for_error
-
-.done:
-	clc
-	ret
-
-.fail:
-	mov rsi, .fail_msg
-	call kprint
-	mov rax, [.lba]
-	call int_to_string
-	call kprint
-	mov rsi, .fail_msg2
-	call kprint
-
-	mov rax, [.count]
-	call int_to_string
-	call kprint
-
-	mov rsi, .fail_msg3
-	call kprint
-
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	call hex_byte_to_string
-	call kprint
-
-	inc [.current_try]
-	cmp [.current_try], ATA_MAXIMUM_RETRIES
-	jge .quit_fail
-
-	mov rsi, .retry_msg
-	call kprint
-
-	jmp .retry
-
-.quit_fail:
-	mov rsi, .abort_msg
-	call kprint
-
-	stc
-	ret
-
-.drive				db 0
-.lba				dq 0
-.count				dq 0
-.buffer				dq 0
-.current_count			dq 0
-.current_try			dq 0
-.msg				db "[ata] PIO LBA48 read.",10,0
-.fail_msg			db "[ata] warning: PIO LBA48 read failure, sector ",0
-.fail_msg2			db ", count ",0
-.fail_msg3			db ", status register 0x",0
-.retry_msg			db ", retrying...",10,0
-.abort_msg			db ", aborting...",10,0
-.time_limit			dq 0
-
-; ata_read_lba28:
-; Reads ATA disk in LBA28 mode
-
-ata_read_lba28:
-	mov [.drive], al
-	mov [.lba], rbx
-	mov [.count], rcx
-	mov [.buffer], rdi
-	mov [.current_try], 0
-
-.retry:
-	cmp [.current_try], ATA_MAXIMUM_RETRIES
-	je .quit_fail
-
-	mov rsi, .msg
-	;call kprint
-
-	mov [.current_count], 0
-	call ata_reset
-
-	mov al, [.drive]
-	shl al, 4
-	or al, 0xE0
-	mov rbx, [.lba]
-	shr rbx, 24
-	or al, bl
-	mov dx, [ata_io_port]
-	add dx, 6
-	out dx, al			; select drive
-	call ata_delay
-
-	mov al, 0
-	mov dx, [ata_io_port]
-	add dx, 1
-	out dx, al
-	;call iowait
-
-	mov rax, [.count]
-	mov dx, [ata_io_port]
-	add dx, 2
-	out dx, al
-	;call iowait			; number of sectors
-
-	mov rax, [.lba]
-	mov dx, [ata_io_port]
-	add dx, 3
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 8
-	mov dx, [ata_io_port]
-	add dx, 4
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 16
-	mov dx, [ata_io_port]
-	add dx, 5
-	out dx, al
-	;call iowait
-
-	mov al, 0x20
-	mov dx, [ata_io_port]
-	add dx, 7
-	out dx, al
-	;call iowait
-
-	mov rcx, 0
-	not rcx
-
-.check_for_error:
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	test al, 1		; ERR
-	jnz .fail
-	test al, 0x20		; drive fault
-	jnz .fail
-	;test al, 0x10
-	;jnz .fail
-	;test al, 0x40
-	;jnz .fail
-	test al, 8		; PIO data ready
-	jnz .start_reading
-
-	dec rcx
-	cmp rcx, 0
-	je .fail
-
-	call iowait
-	jmp .check_for_error
-
-.start_reading:
-	mov dx, [ata_io_port]
-	mov rdi, [.buffer]
-	mov rcx, 256
-	rep insw			; read one sector
-	mov [.buffer], rdi
-	inc [.current_count]
-
-	mov rcx, [.count]
-	cmp [.current_count], rcx
-	jge .done
-
-	call ata_delay
-	mov rcx, 0
-	not rcx
-	jmp .check_for_error
-
-.done:
-	clc
-	ret
-
-.fail:
-	mov rsi, .fail_msg
-	call kprint
-	mov rax, [.lba]
-	call int_to_string
-	call kprint
-	mov rsi, .fail_msg2
-	call kprint
-
-	mov rax, [.count]
-	call int_to_string
-	call kprint
-
-	mov rsi, .fail_msg3
-	call kprint
-
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	call hex_byte_to_string
-	call kprint
-
-	inc [.current_try]
-	cmp [.current_try], ATA_MAXIMUM_RETRIES
-	jge .quit_fail
-
-	mov rsi, .retry_msg
-	call kprint
-
-	jmp .retry
-
-.quit_fail:
-	mov rsi, .abort_msg
-	call kprint
-
-	stc
-	ret
-
-align 16
-.drive				db 0
-align 16
-.lba				dq 0
-align 16
-.count				dq 0
-align 16
-.buffer				dq 0
-align 16
-.current_count			dq 0
-align 16
-.current_try			dq 0
-align 16
-.msg				db "[ata] PIO LBA28 read.",10,0
-.fail_msg			db "[ata] warning: PIO LBA28 read failure, LBA ",0
-.fail_msg2			db ", sector count ",0
-.fail_msg3			db ", status 0x",0
-.retry_msg			db ", retrying...",10,0
-.abort_msg			db ", aborting...",10,0
-.time_limit			dq 0
-
-; ata_write:
-; Writes sectors to ATA device
-; In\	AL = Drive number (0 for master, 1 for slave)
-; In\	RSI = Buffer to write sectors
-; In\	RBX = LBA sector
-; In\	RCX = Sectors to write
-; Out\	RFLAGS = Carry clear on success
-
-ata_write:
-	call enable_interrupts
-
-	cmp al, 0
-	je .master
-
-.slave:
-	test word[ata_identify_slave+166], 0x400		; is LBA48 supported?
-	jnz ata_write_lba48				; yes -- use it
-
-	cmp dword[ata_identify_slave+120], 0		; nope, is LBA28 supported?
-	jne ata_write_lba28				; yes -- use it
-
-	stc
-	ret
-
-.master:
-	test word[ata_identify_master+166], 0x400
-	jnz ata_write_lba48
-
-	cmp dword[ata_identify_master+120], 0
-	jne ata_write_lba28
-
-	stc
-	ret
-
-; ata_write_lba48:
-; Writes ATA disk in LBA48 mode
-
-ata_write_lba48:
-	mov [.lba], rbx
-	mov [.count], rcx
-	mov [.buffer], rsi
-
-	mov [.current_count], 0
-	call ata_reset				; to be safe
-
-	shl al, 4
-	or al, 0x40
-	mov dx, [ata_io_port]
-	add dx, 6
-	out dx, al				; select drive
-	call ata_delay
-
-	mov al, 0
-	mov dx, [ata_io_port]
-	add dx, 1
-	out dx, al
-	;call iowait
-
-	mov rax, [.count]
-	shr rax, 8				; sector count high
-	mov dx, [ata_io_port]
-	add dx, 2
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 24
-	mov dx, [ata_io_port]
-	add dx, 3
-	out dx, al				; LBA
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 32
-	mov dx, [ata_io_port]
-	add dx, 4
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 40
-	mov dx, [ata_io_port]
-	add dx, 5
-	out dx, al
-	;call iowait
-
-	mov rax, [.count]
-	mov dx, [ata_io_port]
-	add dx, 2
-	out dx, al				; sector count low
-	;call iowait
-
-	mov rax, [.lba]
-	mov dx, [ata_io_port]
-	add dx, 3
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 8
-	mov dx, [ata_io_port]
-	add dx, 4
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 16
-	mov dx, [ata_io_port]
-	add dx, 5
-	out dx, al
-	;call iowait
-
-	mov al, 0x34			; 48-bit LBA write
-	mov dx, [ata_io_port]
-	add dx, 7
-	out dx, al
-	call iowait
-
-.check_for_error:
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	test al, 1			; is there an error?
-	jnz .fail
-	test al, 0x20			; is there a drive fault?
-	jnz .fail
-	test al, 8			; is the PIO data ready?
-	jnz .start_writing
-	jmp .check_for_error
-
-.start_writing:
-	mov dx, [ata_io_port]
-	mov rcx, 256
-	mov rsi, [.buffer]
-
-.write_loop:
-	outsw
-	jmp .short_delay
-.short_delay:
-	loop .write_loop
-
-	mov [.buffer], rsi
-	inc [.current_count]
-	call ata_delay			; give it some time to refresh its buffers
-
-	mov rcx, [.count]
-	cmp [.current_count], rcx
-	jge .done
-	jmp .check_for_error
-
-.done:
-	mov al, 0xE7			; flush caches
-	mov dx, [ata_io_port]
-	add dx, 7
-	out dx, al
-	call ata_delay
-
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	test al, 1			; did an error occur?
-	jnz .fail
-	test al, 0x20			; drive fault?
-	jnz .fail
-
-	clc
-	ret
-
-.fail:
-	stc
-	ret
-
-.lba				dq 0
-.count				dq 0
-.buffer				dq 0
-.current_count			dq 0
-
-; ata_write_lba28:
-; Writes ATA disk in LBA28 mode
-
-ata_write_lba28:
-	mov [.lba], rbx
-	mov [.count], rcx
-	mov [.buffer], rsi
-
-	mov [.current_count], 0
-	call ata_reset
-
-	shl al, 4
-	or al, 0xE0
-	mov rbx, [.lba]
-	shr rbx, 24
-	or al, bl
-	mov dx, [ata_io_port]
-	add dx, 6
-	out dx, al			; select drive
-	call ata_delay
-
-	mov al, 0
-	mov dx, [ata_io_port]
-	add dx, 1
-	out dx, al
-	;call iowait
-
-	mov rax, [.count]
-	mov dx, [ata_io_port]
-	add dx, 2
-	out dx, al
-	;call iowait			; number of sectors
-
-	mov rax, [.lba]
-	mov dx, [ata_io_port]
-	add dx, 3
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 8
-	mov dx, [ata_io_port]
-	add dx, 4
-	out dx, al
-	;call iowait
-
-	mov rax, [.lba]
-	shr rax, 16
-	mov dx, [ata_io_port]
-	add dx, 5
-	out dx, al
-	;call iowait
-
-	mov al, 0x30
-	mov dx, [ata_io_port]
-	add dx, 7
-	out dx, al
-	call iowait
-
-.check_for_error:
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	test al, 1			; is there an error?
-	jnz .fail
-	test al, 0x20			; is there a drive fault?
-	jnz .fail
-	test al, 8			; is the PIO data ready?
-	jnz .start_writing
-	jmp .check_for_error
-
-.start_writing:
-	mov dx, [ata_io_port]
-	mov rcx, 256
-	mov rsi, [.buffer]
-
-.write_loop:
-	outsw
-	jmp .short_delay
-.short_delay:
-	loop .write_loop
-
-	mov [.buffer], rsi
-	inc [.current_count]
-	call ata_delay			; give it some time to refresh its buffers
-
-	mov rcx, [.count]
-	cmp [.current_count], rcx
-	jge .done
-	jmp .check_for_error
-
-.done:
-	mov al, 0xE7			; flush caches
-	mov dx, [ata_io_port]
-	add dx, 7
-	out dx, al
-	call ata_delay
-
-	mov dx, [ata_io_port]
-	add dx, 7
-	in al, dx
-	test al, 1			; did an error occur?
-	jnz .fail
-	test al, 0x20			; drive fault?
-	jnz .fail
-
-	clc
-	ret
-
-.fail:
-	stc
-	ret
-
-.lba				dq 0
-.count				dq 0
-.buffer				dq 0
-.current_count			dq 0
-
-; ata_detect_secondary:
-; Detects the secondary ATA bus and all drives on it
-
-ata_detect_secondary:
 	mov rsi, .starting_msg
 	call kprint
+	movzx rax, [.device]
+	call int_to_string
+	call kprint
+	mov rsi, .starting_msg2
+	call kprint
+	movzx rax, [.channel]
+	call int_to_string
+	call kprint
+	mov rsi, newline
+	call kprint
 
-	mov al, [number_of_drives]
-	mov [.tmp_drives], al
+	test [.channel], 1
+	jnz .secondary
 
-	mov dx, [ata_io_port2]
-	add dx, 7			; status port
+	mov ax, [ata_primary_base]
+	mov [.io], ax
+
+	jmp .start
+
+.secondary:
+	mov ax, [ata_secondary_base]
+	mov [.io], ax
+
+.start:
+	call ata_reset
+
+	; first, let's select the drive
+	mov al, 0xA0
+	mov bl, [.device]
+	shl bl, 4
+	or al, bl
+	mov dx, [.io]
+	add dx, 6			; drive select port
+	out dx, al
+	call ata_delay
+
+	;mov dx, [.io]
+	;add dx, 4
+	;in al, dx
+	;cmp al, 0x14
+	;jne .is_ata
+
+	;cmp al, 0xEB
+	;jne .is_ata
+
+	;jmp .is_atapi
+
+.is_ata:
+	; set features register to 0
+	mov dx, [.io]
+	add dx, 1
+	mov al, 0
+	out dx, al
+
+	inc dx				; 0x1F2
+	out dx, al
+
+	inc dx				; 0x1F3
+	out dx, al
+
+	inc dx				; 0x1F4
+	out dx, al
+
+	inc dx				; 0x1F5
+	out dx, al
+
+	; send identify command
+	mov al, ATA_IDENTIFY
+	mov dx, [.io]
+	add dx, 7
+	out dx, al
+
 	in al, dx
-
-	cmp al, 0xFF
+	cmp al, 0
 	je .no
 
-	mov [ata_secondary_present], 1
+.wait_for_ready:
+	;in al, dx
+	;test al, 0x80
+	;jnz .wait_for_ready
 
-	mov rsi, .present_msg
+.check_for_atapi:
+	mov dx, [.io]
+	add dx, 4
+	in al, dx
+	cmp al, 0x14
+	jne .wait_for_drq
+
+	inc dx
+	in al, dx
+	cmp al, 0xEB
+	jne .wait_for_drq
+
+	jmp .is_atapi
+
+.wait_for_drq:
+	mov rsi, .ata_msg
 	call kprint
 
-	; now, let's identify the drives
-	mov al, 0xA0
-	mov rdi, ata_identify_master2
-	call ata_identify_drive_secondary
-	jc .identify_slave
-
-	movzx rax, [number_of_drives]
-	shl rax, 1
-	add rax, list_of_disks
-	mov word[rax], 0x0201
-	inc [number_of_drives]
-	mov [.master], 1
-	inc [ata_secondary_disks]
-
-.identify_slave:
-	mov al, 0xB0
-	mov rdi, ata_identify_slave2
-	call ata_identify_drive_secondary
-	jc .show_disk_info
-
-	movzx rax, [number_of_drives]
-	shl rax, 1
-	add rax, list_of_disks
-	mov word[rax], 0x0301
-	inc [number_of_drives]
-	mov [.slave], 1
-	inc [ata_secondary_disks]
-
-.show_disk_info:
-	mov al, [number_of_drives]
-	cmp al, [.tmp_drives]
-	je .no_drives
-
-	cmp [.master], 0
-	je .master_not_present
-
-	mov rsi, .master_info
-	call kprint
-
-	mov rsi, ata_identify_master2.model
-	mov rdi, ata_master2_model
-	mov rcx, 40
-	rep movsb
-
-	mov rsi, ata_master2_model
-	call convert_string_endianness
-	call trim_string
-	call kprint
-
-	mov rsi, .close
-	call kprint
-
-	test word[ata_identify_master2+83], 0x400
-	jnz .master_lba48
-
-	cmp dword[ata_identify_master2+60], 0
-	jne .master_lba28
-
-	mov rsi, newline
-	call kprint
-	jmp .show_slave_info
-
-.master_lba48:
-	mov rsi, .lba48
-	call kprint
-	jmp .show_slave_info
-
-.master_lba28:
-	mov rsi, .lba28
-	call kprint
-	jmp .show_slave_info
-
-.master_not_present:
-	mov rsi, .no_master_msg
-	call kprint
-
-.show_slave_info:
-	cmp [.slave], 0
-	je .slave_not_present
-
-	mov rsi, .slave_info
-	call kprint
-
-	mov rsi, ata_identify_slave2.model
-	mov rdi, ata_slave2_model
-	mov rcx, 40
-	rep movsb
-
-	mov rsi, ata_slave2_model
-	call convert_string_endianness
-	call trim_string
-	call kprint
-
-	mov rsi, .close
-	call kprint
-
-	test word[ata_identify_slave2+83], 0x400
-	jnz .slave_lba48
-
-	cmp dword[ata_identify_slave2+60], 0
-	jne .slave_lba28
-
-	mov rsi, newline
-	call kprint
-	jmp .done
-
-.slave_lba48:
-	mov rsi, .lba48
-	call kprint
-	jmp .done
-
-.slave_lba28:
-	mov rsi, .lba28
-	call kprint
-	jmp .done
-
-.slave_not_present:
-	mov rsi, .no_slave_msg
-	call kprint
-
-.done:
+	clc
+	mov bl, 0
 	ret
 
-.no_drives:
-	mov rsi, .no_drive_msg
+.is_atapi:
+	mov rsi, .atapi_msg
 	call kprint
+
+	clc
+	mov bl, 1
 	ret
 
 .no:
 	mov rsi, .no_msg
 	call kprint
-	mov [ata_secondary_present], 0
+
+	stc
 	ret
 
-.starting_msg			db "[ata] detecting secondary ATA bus...",10,0
-.present_msg			db "[ata] bus is present.",10,0
-.no_msg				db "[ata] secondary ATA bus not present.",10,0
-.no_drive_msg			db "[ata] ATA controller found, but with no disk drives attached.",10,0
-.master_info			db "[ata] master hard disk model is '",0
-.slave_info			db "[ata] slave hard disk model is '",0
-.no_master_msg			db "[ata] master hard disk is not present.",10,0
-.no_slave_msg			db "[ata] slave hard disk is not present.",10,0
-.close				db "' ",0
-.lba48				db "with LBA48",10,0
-.lba28				db "with LBA28",10,0
-.master				db 0
-.slave				db 0
-.tmp_drives			db 0
+.channel				db 0
+.device					db 0
+.data					dq 0
+.io					dw 0
+.starting_msg				db "[ata] identifying device ",0
+.starting_msg2				db " on channel ",0
+.atapi_msg				db "[ata] found ATAPI drive.",10,0
+.ata_msg				db "[ata] found ATA drive.",10,0
+.no_msg					db "[ata] no device found.",10,0
 
-; ata_identify_drive_secondary:
-; Identifies an ATA drive on the secondary bus
-; In\	AL = Drive number (0xA0 for master, 0xB0 for slave)
-; In\	RDI = 512-byte buffer to store the data
-; Out\	RFLAGS = Carry set on error
+; ata_reset:
+; Resets the ATA primary and secondary channels
 
-ata_identify_drive_secondary:
-	mov [.buffer], rdi
+ata_reset:
+	pushaq
 
-	call ata_reset
-
-	mov dx, [ata_io_port2]
-	add dx, 6
-	out dx, al
-	call ata_delay_secondary
-
-	mov dx, [ata_io_port2]
-	add dx, 2
-	mov al, 0
-	out dx, al
-
-	add dx, 1		; 3
-	mov al, 0
-	out dx, al
-	add dx, 1		; 4
-	mov al, 0
-	out dx, al
-	add dx, 1		; 5
+	mov dx, [ata_primary_base]
+	add dx, 0x206
+	mov al, 4
 	out dx, al
 	call iowait
 
-	mov al, 0xEC		; ATA IDENTIFY
-	mov dx, [ata_io_port2]
-	add dx, 7
+	mov dx, [ata_primary_base]
+	add dx, 0x206
+	mov al, 0
 	out dx, al
-	call ata_delay_secondary
 
-	mov dx, [ata_io_port2]
+	mov dx, [ata_secondary_base]
+	add dx, 0x206
+	mov al, 4
+	out dx, al
+	call iowait
+
+	mov dx, [ata_secondary_base]
+	add dx, 0x206
+	mov al, 0
+	out dx, al
+
+	popaq
+	ret
+
+; ata_read:
+; Reads from ATA device
+; In\	AL = Device select bitfield
+;		Bit 0: Master/slave device
+;		Bit 4: Primary/secondary channel
+;		Bit 7: Is an ATAPI device
+; In\	RDI = Buffer to read sectors into
+; In\	RBX = LBA sector to read
+; In\	RCX = Number of sectors to read
+; Out\	RFLAGS.CF = 0 on success
+
+ata_read:
+	call enable_interrupts
+
+	test al, 0x80		; is ATAPI?
+	jnz atapi_read
+
+	;cmp rbx, 0xFFFFFFF-0x100		; use LBA48 only when nescessary --
+	;jge ata_read_lba48			; -- because LBA28 is faster and uses less IO bandwidth
+
+	jmp ata_read_lba28
+
+; ata_read_lba28:
+; Reads from ATA hard disk using LBA28
+
+ata_read_lba28:
+	mov [.buffer], rdi
+	mov [.sectors], rcx
+	mov [.lba], rbx
+	mov [.device], al
+	mov [.count], 0
+
+	mov rsi, .starting_msg
+	call kprint
+
+	mov al, [.device]
+	test al, 0x10		; secondary channel?
+	jnz .secondary
+
+.primary:
+	mov dx, [ata_primary_base]
+	mov [.io], dx
+	jmp .start
+
+.secondary:
+	mov dx, [ata_secondary_base]
+	mov [.io], dx
+
+.start:
+	call ata_reset		; reset the ATA bus
+	mov al, [.device]
+	and al, 1
+	shl al, 4
+	mov rbx, [.lba]
+	shr rbx, 24
+	or al, bl
+	or al, 0xE0
+	mov dx, [.io]
+	add dx, 6
+	out dx, al		; select device and highest 4 bits of LBA
+	call ata_delay
+
+	mov al, 0
+	mov dx, [.io]
+	inc dx
+	out dx, al		; select PIO mode
+
+	mov rax, [.sectors]
+	mov dx, [.io]
+	add dx, 2
+	out dx, al		; sector count
+
+	mov rax, [.lba]
+	mov dx, [.io]
+	add dx, 3
+	out dx, al		; LBA low
+
+	mov rax, [.lba]
+	shr rax, 8
+	mov dx, [.io]
+	add dx, 4
+	out dx, al		; LBA middle
+
+	mov rax, [.lba]
+	shr rax, 16
+	mov dx, [.io]
+	add dx, 5
+	out dx, al		; LBA high
+
+	mov al, ATA_READ_LBA28
+	mov dx, [.io]
 	add dx, 7
-	in al, dx
-	cmp al, 0
-	je .fail
+	out dx, al		; command byte
 
 .wait_for_ready:
-	mov dx, [ata_io_port2]
+	mov dx, [.io]
 	add dx, 7
 	in al, dx
-	test al, 0x80
-	jz .check_if_ata
-	jmp .wait_for_ready
-
-.check_if_ata:
-	mov dx, [ata_io_port2]
-	add dx, 4
-	in al, dx
 	cmp al, 0
-	jne .fail
+	je .error
+	;test al, 0x80
+	;jnz .wait_for_ready
 
-	mov dx, [ata_io_port2]
-	add dx, 5
+.check_for_error:
 	in al, dx
-	cmp al, 0
-	jne .fail
+	test al, 1
+	jnz .error
 
-.wait_again:
-	mov dx, [ata_io_port2]
-	add dx, 7
-	in al, dx
-	test al, 8			; DRQ
+	test al, 0x20
+	jnz .error
+
+	test al, 8
 	jnz .start_reading
-
-	test al, 1			; ERR
-	jnz .fail
-	jmp .wait_again
+	jmp .check_for_error
 
 .start_reading:
 	mov rdi, [.buffer]
-	mov dx, [ata_io_port2]
 	mov rcx, 256
+	mov dx, [.io]
 	rep insw
-	call ata_delay_secondary
+
+	add [.buffer], 512
+	inc [.count]
+
+	mov rax, [.sectors]
+	cmp [.count], rax
+	jge .done
+
+	call ata_delay
+
+	jmp .wait_for_ready
+
+.done:
+	mov rsi, .done_msg
+	call kprint
+	clc
+	ret
+
+.error:
+	mov rsi, .err_msg
+	call kprint
+	stc
+	ret
+
+.io			dw 0
+.device			db 0
+.buffer			dq 0
+.lba			dq 0
+.sectors		dq 0
+.count			dq 0
+.starting_msg		db "[ata] attempting to read from ATA device...",10,0
+.done_msg		db "[ata] done.",10,0
+.err_msg		db "[ata] disk I/O error.",10,0
+
+; atapi_read:
+; Reads from ATAPI device
+
+atapi_read:
+	mov [.device], al
+	mov [.lba], rbx
+	mov [.sectors], rcx
+	mov [.buffer], rdi
+	mov [.count], 0
+
+	mov rsi, .starting_msg
+	call kprint
+
+	mov al, [.device]
+	test al, 0x10		; secondary channel?
+	jnz .secondary
+
+.primary:
+	mov dx, [ata_primary_base]
+	mov [.io], dx
+	jmp .start
+
+.secondary:
+	mov dx, [ata_secondary_base]
+	mov [.io], dx
+
+.start:
+	; create a SCSI command packet
+	mov rdi, atapi_packet
+	mov al, 0
+	mov rcx, 12
+	rep stosb
+
+	mov byte[atapi_packet], ATAPI_READ	; command byte
+
+	mov rax, [.sectors]
+	mov byte[atapi_packet+9], al		; number of sectors
+
+	mov rax, [.lba]				; LBA sector
+	mov byte[atapi_packet+5], al
+	shr rax, 8
+	mov byte[atapi_packet+4], al
+	shr rax, 8
+	mov byte[atapi_packet+3], al
+	shr rax, 8
+	mov byte[atapi_packet+2], al
+
+	; Reset the ATA bus
+	call ata_reset
+
+	; select the drive
+	mov al, [.device]
+	and al, 1
+	shl al, 4
+	mov dx, [.io]
+	add dx, 6
+	out dx, al
+	call ata_delay			; standard 400ns delay
+
+	mov al, 0
+	mov dx, [.io]
+	add dx, 1
+	out dx, al			; tell the controller we're using PIO
+
+	mov rax, [.sectors]
+	shl rax, 11
+	mov dx, [.io]
+	add dx, 2
+	out dx, al			; number of bytes we expect, low word
+
+	inc dx
+	shr rax, 8
+	out dx, al			; high word ^^
+
+	; now, send the ATAPI PACKET command
+	mov al, ATA_PACKET
+	mov dx, [.io]
+	add dx, 7
+	out dx, al
+
+	; check if the drive is present
+	in al, dx
+	in al, dx
+	cmp al, 0
+	je .error
+
+.wait_send_packet:
+	; wait for DRQ to set so we can send the packet
+	in al, dx
+	test al, 8
+	jnz .send_packet
+
+	test al, 1		; ERR?
+	jnz .error
+
+	test al, 0x20		; DF?
+	jnz .error
+	jmp .wait_send_packet
+
+.send_packet:
+	mov dx, [.io]
+	mov rsi, atapi_packet
+	mov rcx, 6
+	rep outsw			; send ATAPI packet to device
+
+	call ata_delay			; wait for device to get ready
+
+	; ask the drive for the size of data it will send
+	mov dx, [.io]
+	add dx, 2
+	in al, dx
+	mov byte[.size], al
+	inc dx
+	in al, dx
+	mov byte[.size+1], al
+
+.wait_for_error:
+	mov dx, [.io]
+	add dx, 7
+	in al, dx
+	test al, 8
+	jnz .start_reading
+	test al, 1
+	jnz .error
+	test al, 0x20
+	jnz .error
+	jmp .wait_for_error
+
+.start_reading:
+	; now read the data
+	mov dx, [.io]
+	mov rdi, [.buffer]
+	movzx rcx, [.size]
+	shr rcx, 1
+	rep insw
+
+	; wait for the command to finish
+	call ata_delay
+
+.wait_for_command_finish:
+	;mov dx, [.io]
+	;add dx, 7
+	;in al, dx
+	;test al, 0x88		; wait for BSY and DRQ to clear
+	;jz .done
+	;jmp .wait_for_command_finish
+
+.done:
+	mov rsi, .done_msg
+	call kprint
 
 	clc
 	ret
 
-.fail:
+.error:
+	mov rsi, .err_msg
+	call kprint
+
 	stc
 	ret
 
-.buffer				dq 0
+.io			dw 0
+.device			db 0
+.buffer			dq 0
+.lba			dq 0
+.sectors		dq 0
+.count			dq 0
+.size			dw 0
+.starting_msg		db "[atapi] attempting to read from ATAPI device...",10,0
+.done_msg		db "[atapi] done.",10,0
+.err_msg		db "[atapi] disk I/O error.",10,0
 
-; ata_delay_secondary:
-; Waits for a secondary ATA I/O to complete
-
-ata_delay_secondary:
-	push rax
-	push rdx
-
-	mov dx, [ata_io_port2]
-	add dx, 7			; status port
-
-	in al, dx
-	in al, dx
-	in al, dx
-	in al, dx
-
-	pop rdx
-	pop rax
-	ret
-
-
+; ata_identify_data:
+; Data returned from the ATA/ATAPI IDENTIFY command
 align 16
-ata_identify_master:
+ata_identify_data:
 	.device_type		dw 0		; 0
 
 	.cylinders		dw 0		; 1
@@ -1488,140 +759,6 @@ ata_identify_master:
 				db 0
 	.user_addressable_secs	dd 0
 				dw 0
-	times 512 - ($-ata_identify_master) db 0
-
-align 16
-ata_identify_slave:
-	.device_type		dw 0
-
-	.cylinders		dw 0
-	.reserved_word2		dw 0
-	.heads			dw 0
-				dd 0
-	.sectors_per_track	dw 0
-	.vendor_unique:		times 3 dw 0
-	.serial_number:		times 20 db 0
-				dd 0
-	.obsolete1		dw 0
-	.firmware_revision:	times 8 db 0
-	.model:			times 40 db 0
-	.maximum_block_transfer	db 0
-				db 0
-				dw 0
-
-				db 0
-	.dma_support		db 0
-	.lba_support		db 0
-	.iordy_disable		db 0
-	.iordy_support		db 0
-				db 0
-	.standyby_timer_support	db 0
-				db 0
-				dw 0
-
-				dd 0
-	.translation_fields	dw 0
-				dw 0
-	.current_cylinders	dw 0
-	.current_heads		dw 0
-	.current_spt		dw 0
-	.current_sectors	dd 0
-				db 0
-				db 0
-				db 0
-	.user_addressable_secs	dd 0
-				dw 0
-	times 512 - ($-ata_identify_slave) db 0
-
-
-align 16
-ata_identify_master2:
-	.device_type		dw 0		; 0
-
-	.cylinders		dw 0		; 1
-	.reserved_word2		dw 0		; 2
-	.heads			dw 0		; 3
-				dd 0		; 4
-	.sectors_per_track	dw 0		; 6
-	.vendor_unique:		times 3 dw 0	; 7
-	.serial_number:		times 20 db 0	; 10
-				dd 0		; 11
-	.obsolete1		dw 0		; 13
-	.firmware_revision:	times 8 db 0	; 14
-	.model:			times 40 db 0	; 18
-	.maximum_block_transfer	db 0
-				db 0
-				dw 0
-
-				db 0
-	.dma_support		db 0
-	.lba_support		db 0
-	.iordy_disable		db 0
-	.iordy_support		db 0
-				db 0
-	.standyby_timer_support	db 0
-				db 0
-				dw 0
-
-				dd 0
-	.translation_fields	dw 0
-				dw 0
-	.current_cylinders	dw 0
-	.current_heads		dw 0
-	.current_spt		dw 0
-	.current_sectors	dd 0
-				db 0
-				db 0
-				db 0
-	.user_addressable_secs	dd 0
-				dw 0
-	times 512 - ($-ata_identify_master2) db 0
-
-align 16
-ata_identify_slave2:
-	.device_type		dw 0
-
-	.cylinders		dw 0
-	.reserved_word2		dw 0
-	.heads			dw 0
-				dd 0
-	.sectors_per_track	dw 0
-	.vendor_unique:		times 3 dw 0
-	.serial_number:		times 20 db 0
-				dd 0
-	.obsolete1		dw 0
-	.firmware_revision:	times 8 db 0
-	.model:			times 40 db 0
-	.maximum_block_transfer	db 0
-				db 0
-				dw 0
-
-				db 0
-	.dma_support		db 0
-	.lba_support		db 0
-	.iordy_disable		db 0
-	.iordy_support		db 0
-				db 0
-	.standyby_timer_support	db 0
-				db 0
-				dw 0
-
-				dd 0
-	.translation_fields	dw 0
-				dw 0
-	.current_cylinders	dw 0
-	.current_heads		dw 0
-	.current_spt		dw 0
-	.current_sectors	dd 0
-				db 0
-				db 0
-				db 0
-	.user_addressable_secs	dd 0
-				dw 0
-	times 512 - ($-ata_identify_slave2) db 0
-
-
-
-
+	times 512 - ($-ata_identify_data) db 0
 
 

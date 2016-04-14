@@ -15,7 +15,7 @@ jmp short kmain16
 
 KSTACK_SIZE			= 4096
 API_VERSION			= 1
-define				TODAY "26.03.2016"
+define				TODAY "14.04.2016"
 
 times 32 - ($-$$) db 0
 newline				db 10,0
@@ -40,6 +40,7 @@ kmain16:
 	mov fs, ax
 	mov gs, ax
 	mov [bootdisk], dl
+	mov [bios_bootdisk], dl
 
 	sti
 
@@ -106,7 +107,10 @@ kmain16:
 	mov si, .pci_present_msg
 	call print_string_16
 
-	; to help with detecting disks later on, we will save the MBR of the boot disk
+	; to help with detecting disks later on, we will save the MBR of the boot disk, that is, if we booted from an HDD!
+	test [bootdisk], 0xE0		; did we boot from a CD/DVD?
+	jnz .cd_boot			; yep -- forget about MBR and such
+
 	mov ax, 0
 	mov dl, [bootdisk]
 	int 0x13			; reset the disk
@@ -121,6 +125,8 @@ kmain16:
 	mov dl, [bootdisk]
 	int 0x13
 	jc .cannot_read_mbr
+
+	mov [bootcd], 0
 
 	jmp .keep_booting
 
@@ -141,6 +147,9 @@ kmain16:
 	jmp $
 
 .cannot_read_mbr_msg		db "BIOS error! Cannot read the master boot record!",10,0
+
+.cd_boot:
+	mov [bootcd], 1
 
 .keep_booting:
 	sti
@@ -306,7 +315,7 @@ kmain64:
 	call init_user				; initialize usermode stuff
 	;call init_tasking			; start multitasking
 	call random_seed			; seed the random number generator
-	call load_drivers			; loads all boot-time drivers
+	;call load_drivers			; loads all boot-time drivers
 	call enable_interrupts			; enable interrupts on all CPUs
 
 	jmp gui

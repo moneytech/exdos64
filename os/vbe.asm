@@ -520,30 +520,30 @@ map_vbe_framebuffer:
 	mov ecx, 0xFFFFFF
 	call set_text_color
 
-	mov rsi, bootlogo
-	call decode_bmp24
+	;mov rsi, bootlogo
+	;call decode_bmp24
 
-	mov [bootlogo_width], si
-	mov [bootlogo_height], di
-	mov [bootlogo_size], rcx
-	mov [bootlogo_mem], rax
+	;mov [bootlogo_width], si
+	;mov [bootlogo_height], di
+	;mov [bootlogo_size], rcx
+	;mov [bootlogo_mem], rax
 
-	call get_screen_center
+	;call get_screen_center
 
-	movzx rcx, [bootlogo_width]
-	movzx rdx, [bootlogo_height]
-	shr rcx, 1
-	shr rdx, 1
-	sub rax, rcx
-	sub rbx, rdx
-	mov si, [bootlogo_width]
-	mov di, [bootlogo_height]
-	mov rdx, [bootlogo_mem]
-	call blit_buffer
+	;movzx rcx, [bootlogo_width]
+	;movzx rdx, [bootlogo_height]
+	;shr rcx, 1
+	;shr rdx, 1
+	;sub rax, rcx
+	;sub rbx, rdx
+	;mov si, [bootlogo_width]
+	;mov di, [bootlogo_height]
+	;mov rdx, [bootlogo_mem]
+	;call blit_buffer
 
-	mov rax, [bootlogo_mem]
-	mov rbx, [bootlogo_size]
-	call kfree			; free this unused memory
+	;mov rax, [bootlogo_mem]
+	;mov rbx, [bootlogo_size]
+	;call kfree			; free this unused memory
 
 	mov rsi, boot_notice
 	mov cx, 16
@@ -576,12 +576,12 @@ map_vbe_framebuffer:
 .model_msg			db "[vesafb] card model is ",0
 .no_mem_msg			db "[vesafb] not enough memory for VESA back buffer...",10,0
 
-align 16
-bootlogo:			file "os/bootlogo.bmp"
-bootlogo_width			dw 0
-bootlogo_height			dw 0
-bootlogo_size			dq 0
-bootlogo_mem			dq 0
+;align 16
+;bootlogo:			file "os/bootlogo.bmp"
+;bootlogo_width			dw 0
+;bootlogo_height			dw 0
+;bootlogo_size			dq 0
+;bootlogo_mem			dq 0
 boot_notice			db "(C) 2015-2016 by Omar Mohammad.",10
 				db "All rights reserved.",0
 

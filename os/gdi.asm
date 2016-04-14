@@ -288,7 +288,7 @@ clear_screen:
 	stosb
 	sub rcx, 3
 	cmp rcx, 3
-	jle .24_loop
+	jg .24_loop
 
 	call redraw_screen
 	ret

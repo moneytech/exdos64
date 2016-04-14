@@ -168,6 +168,7 @@ bootdrive_mbr:			times 512 db 0		; where the boot drive MBR is to be saved
 mbr_tmp:			times 512 db 0		; temporarily
 
 bootdisk			db 0
+bios_bootdisk			db 0
 
 align 16
 boot_partition:
