@@ -9,16 +9,18 @@ Features
 ========
 - Fully 64-bit -- independent of BIOS.
 - SMP up to 16 CPUs, and I/O APIC.
-- Read/write ATA driver.
+- ATA/ATAPI driver.
+- ExDFS filesystem access (and ISO9660 coming soon!)
 - VESA 2.0 framebuffer driver, up to 16 million colors.
 - Window Manager.
 - PCI/PCIe scanner.
-- ACPI driver (with shutdown and reset, and partial AML interpreter under development).
-- Driver interface in userspace (hybrid kernel).
+- ACPI driver (with shutdown and reset, and partial AML interpreter under development.)
+- Driver interface in userspace (hybrid kernel.)
 
 Running ExDOS
 =============
-ExDOS runs in Bochs, QEMU, VirtualBox, VMware and some real hardware. In Bochs, performance is low. Use disk.img as a hard disk image, with CHS values 71/16/63. In QEMU, VirtualBox and VMware, be sure to use the disk image with ATA and not SATA, as the AHCI driver is not yet functional.
+ExDOS runs in Bochs, QEMU, VirtualBox, VMware and some real hardware. In Bochs, performance is low. Use disk.img as a hard disk image, with CHS values 71/16/63. In QEMU, VirtualBox and VMware, be sure to use the disk image with ATA and not SATA, as the AHCI driver is not yet functional.  
+ExDOS can also run from a CD/DVD drive. Currently, it only supports ATAPI, and not yet SATAPI as the AHCI driver is not yet functional. ExDOS has an ATAPI driver but no ISO9660 driver yet, and so the file system is unavailable when booting from a CD. Still, you can run "qemu-system-x86_64 -cdrom exdos.iso" to run it from a CD-ROM.
 
 Source code organization
 ========================
