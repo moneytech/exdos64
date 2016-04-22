@@ -422,9 +422,6 @@ ata_read_lba28:
 	mov [.device], al
 	mov [.count], 0
 
-	mov rsi, .starting_msg
-	call kprint
-
 	mov al, [.device]
 	test al, 0x10		; secondary channel?
 	jnz .secondary
@@ -523,14 +520,47 @@ ata_read_lba28:
 	jmp .wait_for_ready
 
 .done:
-	mov rsi, .done_msg
-	call kprint
 	clc
 	ret
 
 .error:
+
+	; print out some debugging information
 	mov rsi, .err_msg
 	call kprint
+
+	mov rax, [.lba]
+	call int_to_string
+	call kprint
+
+	mov rsi, .err_msg2
+	call kprint
+
+	mov rax, [.sectors]
+	call int_to_string
+	call kprint
+
+	mov rsi, .err_msg3
+	call kprint
+
+	mov dx, [.io]
+	add dx, 7
+	in al, dx
+	call hex_byte_to_string
+	call kprint
+
+	mov rsi, .err_msg4
+	call kprint
+
+	mov dx, [.io]
+	inc dx
+	in al, dx
+	call hex_byte_to_string
+	call kprint
+
+	mov rsi, newline
+	call kprint
+
 	stc
 	ret
 
@@ -540,9 +570,12 @@ ata_read_lba28:
 .lba			dq 0
 .sectors		dq 0
 .count			dq 0
-.starting_msg		db "[ata] attempting to read from ATA device...",10,0
-.done_msg		db "[ata] done.",10,0
-.err_msg		db "[ata] disk I/O error.",10,0
+;.starting_msg		db "[ata] attempting to read from ATA device...",10,0
+;.done_msg		db "[ata] done.",10,0
+.err_msg		db "[ata] disk read error, LBA ",0
+.err_msg2		db ", sector count ",0
+.err_msg3		db ", drive status 0x",0
+.err_msg4		db ", error code 0x",0
 
 ; atapi_read:
 ; Reads from ATAPI device

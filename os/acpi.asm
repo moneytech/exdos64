@@ -1380,24 +1380,18 @@ acpi_fadt_size			= end_of_acpi_fadt - acpi_fadt
 ; Out\	RAX = Information returned by code, -1 if none
 
 acpi_run_aml:
-	mov [.stack], rsp		; this may corrupt the stack so be safe..
-	mov [.code], rax
-	mov [.callees], 0
+	mov [.original_stack], rsp	; save the stack
+	mov [.threads], 0
 
-	mov rsi, .msg
-	call kprint
+.aml_execute:
+	inc [.threads]
 
-	mov rsi, [.code]
-	call kprint
+	mov rsi, rax
+	add rsi, 5
 
-	mov rsi, newline
-	call kprint
-
-	mov rsi, [.code]
-	add rsi, 4
-
-.loop:
+.execute_loop:
 	push rsi
+
 	cmp byte[rsi], AML_OPCODE_ZERO
 	je aml_noop
 
@@ -1408,54 +1402,25 @@ acpi_run_aml:
 	je aml_noop
 
 	cmp byte[rsi], AML_OPCODE_NAME
-	je aml_skip_name
+	je aml_name
 
 	cmp byte[rsi], AML_OPCODE_PACKAGE
-	je aml_skip_package
+	je aml_package
 
 	cmp byte[rsi], AML_OPCODE_RETURN
 	je aml_return
 
-	jmp aml_bad_opcode
+	jmp aml_opcode_error
 
-.finish:
-	cmp rax, -1
-	je .no_return
 
-	pushaq
-	mov rsi, .return_msg
-	call kprint
-	popaq
-	pushaq
-	call hex_dword_to_string
-	call kprint
-	mov rsi, newline
-	call kprint
+.threads			dq 0
+.original_stack			dq 0
 
-	popaq
-	mov rsp, [.stack]
-	ret
-
-.no_return:
-	pushaq
-	mov rsi, .no_return_msg
-	call kprint
-	popaq
-	mov rsp, [.stack]
-	ret
-
-.stack				dq 0
-.code				dq 0
-.callees			dq 0
-.msg				db "[acpi] interpreting AML method ",0
-.return_msg			db "[acpi] done, return value 0x",0
-.no_return_msg			db "[acpi] done, no return value present.",0
-
-;;
-;; CORE INTERPRETER
+;; 
+;; AML INTERPRETER CORE
 ;;
 
-aml_bad_opcode:
+aml_opcode_error:
 	mov rsi, .msg
 	call kprint
 
@@ -1468,34 +1433,99 @@ aml_bad_opcode:
 	call kprint
 
 	mov rax, -1
-	jmp acpi_run_aml.finish
+	mov rsp, [acpi_run_aml.original_stack]
+	ret	
 
-.msg				db "[acpi] undefined opcode: 0x",0
-.msg2				db ", terminating AML execution...",10,0
+.msg				db "[acpi] undefined opcode 0x",0
+.msg2				db ", aborting...",10,0
 
 aml_noop:
 	pop rsi
 	inc rsi
-	jmp acpi_run_aml.loop
+	jmp acpi_run_aml.execute_loop
 
-aml_skip_name:
+aml_name:
 	pop rsi
-	add rsi, 5
-	jmp acpi_run_aml.loop
+	add rsi, 5		; all names are 4 bytes, and add 1 byte for the name prefix
+	jmp acpi_run_aml.execute_loop
 
-aml_skip_package:
+aml_return:
 	pop rsi
-	add rsi, 2		; size of package
-	movzx rax, byte[rsi]
+	inc rsi
+
+	cmp byte[rsi], AML_OPCODE_ZERO
+	je .zero
+
+	cmp byte[rsi], AML_OPCODE_ONE
+	je .one
+
+	cmp byte[rsi], AML_OPCODE_ONES
+	je .ones
+
+	cmp byte[rsi], AML_OPCODE_BYTEPREFIX
+	je .byte
+
+	cmp byte[rsi], AML_OPCODE_WORDPREFIX
+	je .word
+
+	cmp byte[rsi], AML_OPCODE_DWORDPREFIX
+	je .dword
+
+	cmp byte[rsi], AML_OPCODE_QWORDPREFIX
+	je .qword
+
+	; assume it's returning another method...
+	
+
+.zero:
+	mov rax, 0
+	mov rsp, [acpi_run_aml.original_stack]
+	ret
+
+.one:
+	mov rax, 0
+	mov rsp, [acpi_run_aml.original_stack]
+	ret
+
+.ones:
+	mov rax, 0xFF
+	mov rsp, [acpi_run_aml.original_stack]
+	ret
+
+.byte:
+	movzx rax, byte[rsi+1]
+	mov rsp, [acpi_run_aml.original_stack]
+	ret
+
+.word:
+	movzx rax, word[rsi+1]
+	mov rsp, [acpi_run_aml.original_stack]
+	ret
+
+.dword:
+	mov rax, 0
+	mov eax, [rsi+1]
+	mov rsp, [acpi_run_aml.original_stack]
+	ret
+
+.qword:
+	mov rax, [rsi+1]
+	mov rsp, [acpi_run_aml.original_stack]
+	ret
+
+aml_package:
+	pop rsi
+	add rsi, 2
+	movzx rax, byte[rsi]		; package size
 	mov [.package_size], rax
 	mov [.current_size], 0
 
-	inc rsi			; start of package
+	inc rsi
 
-.loop:
-	mov rax, [.current_size]
-	cmp [.package_size], rax
-	jle .done
+.parse_package:
+	mov rax, [.package_size]
+	cmp [.current_size], rax
+	jge .done
 
 	cmp byte[rsi], AML_OPCODE_BYTEPREFIX
 	je .byte
@@ -1512,49 +1542,46 @@ aml_skip_package:
 	cmp byte[rsi], AML_OPCODE_STRINGPREFIX
 	je .string
 
+	; for ZERO, ONE and ONES, which don't take prefixes
 	inc rsi
 	inc [.current_size]
-	jmp .loop
+	jmp .parse_package
 
 .byte:
-	inc [.current_size]
 	add rsi, 2
-	jmp .loop
+	inc [.current_size]
+	jmp .parse_package
 
 .word:
-	inc [.current_size]
 	add rsi, 3
-	jmp .loop
+	inc [.current_size]
+	jmp .parse_package
 
 .dword:
-	inc [.current_size]
 	add rsi, 5
-	jmp .loop
+	inc [.current_size]
+	jmp .parse_package
 
 .qword:
-	inc [.current_size]
 	add rsi, 9
-	jmp .loop
+	inc [.current_size]
+	jmp .parse_package
 
 .string:
 	inc rsi
+	push rsi
 	call get_string_size
-	add rsi, rax
+	pop rsi
+	add rsi,rax
 	inc rsi
 	inc [.current_size]
-	jmp .loop
+	jmp .parse_package
 
 .done:
-	jmp acpi_run_aml.loop
+	jmp acpi_run_aml.execute_loop
 
 .package_size			dq 0
 .current_size			dq 0
-
-aml_return:
-	inc rsi
-	mov rax, 0
-	mov eax, [rsi]
-	jmp acpi_run_aml.finish
 
 ;;
 ;; AML OPCODE LOOKUP

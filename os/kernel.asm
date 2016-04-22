@@ -15,7 +15,7 @@ jmp short kmain16
 
 KSTACK_SIZE			= 4096
 API_VERSION			= 1
-define				TODAY "14.04.2016"
+define				TODAY "22.04.2016"
 
 times 32 - ($-$$) db 0
 newline				db 10,0
