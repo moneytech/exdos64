@@ -32,7 +32,7 @@ init_storage:
 
 	call memdisk_detect		; detect MEMDISK memory-mapped drives
 	call ata_detect			; detect ATA/ATAPI drives
-	;call ahci_detect		; detect AHCI devices
+	call ahci_detect		; detect AHCI devices
 	;call nvme_detect		; detect NVMe devices -- will be implemented after I have PCI-E driver
 
 	mov rsi, .done_msg

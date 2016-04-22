@@ -26,8 +26,30 @@ ahci_pci_function		db 0
 ahci_base			dq AHCI_BASE
 AHCI_BASE			= 0x300000000
 
+; AHCI Types of FIS
+
+AHCI_FIS_H2D			= 0x27
+
+; AHCI Port Structure
+
+ahci_port:
+	.command_list		= 0x00
+	.fis			= 0x08
+	.interrupt_status	= 0x10
+	.interrupt_enable	= 0x14
+	.command		= 0x18
+	.reserved0		= 0x1C
+	.task_file		= 0x20
+	.sata_status		= 0x28
+	.sata_control		= 0x2C
+	.sata_error		= 0x30
+	.sata_active		= 0x34
+	.command_issue		= 0x38
+	.sata_notification	= 0x3C
+	.fbs			= 0x40
+
 ; ahci_detect:
-; Detects SATA (AHCI) drives
+; Detects AHCI devices
 
 ahci_detect:
 	mov rsi, .starting_msg
@@ -99,7 +121,7 @@ ahci_detect:
 
 	call ahci_detect_ports
 
-	; enable PCI busmaster DMA
+	; enable PCI bus master DMA
 	mov al, [ahci_pci_bus]
 	mov ah, [ahci_pci_device]
 	mov bl, [ahci_pci_function]
@@ -113,7 +135,7 @@ ahci_detect:
 	mov bh, 4
 	call pci_write_dword
 
-	ret				; for now, because I didn't finish AHCI yet..
+	ret
 
 .no_ahci:
 	mov rsi, .no_msg
@@ -197,6 +219,171 @@ ahci_get_port_base:
 	add rax, [ahci_base]
 	ret
 
+; ahci_create_fis:
+; Creates a command FIS
+; In\	RAX = LBA
+; In\	RCX = Sector count
+; In\	DL = Command byte
+; In\	RDI = Physical address of DMA transfer
+; Out\	RAX = Address of FIS
+
+ahci_create_fis:
+	pushaq
+
+	mov rdi, ahci_command_fis
+	mov rcx, ahci_command_fis_size
+	mov rax, 0
+	rep stosb
+
+	mov byte[ahci_command_fis.type], AHCI_FIS_H2D
+	mov byte[ahci_command_fis.is_command], 0x80	; tell ahci controller this is a command FIS and not a control FIS
+
+	popaq
+	mov [ahci_command_fis.command], dl		; command byte
+	mov [ahci_command_fis.count], cx		; sector count
+	mov [ahci_prdt.base], rdi
+	mov [ahci_prdt.reserved], 0
+	shl rcx, 9
+	mov [ahci_prdt.byte_count], ecx			; bytecount of DMA transfer
+
+	mov [ahci_command_fis.lba0], al			; Lba sector
+	shr rax, 8
+	mov [ahci_command_fis.lba1], al
+	shr rax, 8
+	mov [ahci_command_fis.lba2], al
+	shr rax, 8
+	mov [ahci_command_fis.lba3], al
+	shr rax, 8
+	mov [ahci_command_fis.lba4], al
+	shr rax, 8
+	mov [ahci_command_fis.lba5], al
+
+	mov rax, ahci_command_fis
+	ret
+
+; ahci_command_fis:
+; Name says it^^
+align 128			; AHCI probably wants this aligned
+ahci_command_fis:
+	.type			db AHCI_FIS_H2D
+	.is_command		db 0x80			; bit 7 set to tell AHCI controller this is a command
+
+	.command		db 0		; command byte
+	.feature_low		db 0
+
+	.lba0			db 0
+	.lba1			db 0
+	.lba2			db 0
+	.device_select		db 0
+
+	.lba3			db 0
+	.lba4			db 0
+	.lba5			db 0
+	.feature_high		db 0
+
+	.count			dw 0
+	.icc			db 0
+	.control		db 0
+
+	.reserved:		times 4 db 0
+
+	times 128 - ($-ahci_command_fis) db 0
+
+ahci_prdt:
+	.base			dq 0
+	.reserved		dd 0
+	.byte_count		dd 0
+
+ahci_command_fis_size		= $ - ahci_command_fis
+
+; ahci_send_command:
+; Sends a command to an AHCI device
+; In\	AL = Port number
+; In\	RBX = LBA sector
+; In\	RCX = Sector count
+; In\	RDI = Virtual buffer address
+; In\	DL = Command byte
+; Out\	RFLAGS.CF = 0 on success
+
+ahci_send_command:
+	mov [.port], al
+	mov [.lba], rbx
+	mov [.sector], rcx
+	mov [.buffer], rdi
+	mov [.command], dl
+
+	; AHCI is a PCI bus master DMA device, and so we must use physical address
+	mov rax, [.buffer]
+	call vmm_get_physical_address
+	cmp rax, 0			; is there a page with no memory mapped in it?
+	je .error			; yep -- don't send the command because this will overwrite the kernel
+	mov [.buffer_phys], rax
+
+	; now construct the command FIS
+	mov rax, [.lba]
+	mov rcx, [.sector]
+	mov dl, [.command]
+	mov rdi, [.buffer_phys]
+	call ahci_create_fis
+
+	; construct the command list and header
+	mov rdi, ahci_command_list
+	mov rcx, ahci_command_list_size
+	mov rax, 0
+	rep stosb
+
+	mov [ahci_command_list.fis_length], 0x10	; length of the command FIS in DWORDs
+	mov [ahci_command_list.reset], 0		; don't reset the drive
+	mov [ahci_command_list.prdt_length], 1		; only 1 PRDT entry
+
+	mov rax, [.sector]
+	shl rax, 9
+	mov [ahci_command_list.prdt_bytes], eax		; size of the DMA transfer in bytes
+
+	mov [ahci_command_list.command_table], ahci_command_fis	; command FIS and PRDT
+
+	; now get the port base
+	mov cl, [.port]
+	call ahci_get_port_base
+
+	; tell the controller about the command
+	mov qword[rax+ahci_port.command_list], ahci_command_list
+
+	; tell the controller to send the command to the SATA device
+	mov dword[rax+ahci_port.command_issue], 1
+
+	call flush_caches
+
+	; TODO: Continue work here!!!
+
+.error:
+	stc
+	ret
+
+.port				db 0
+.lba				dq 0
+.sector				dq 0
+.buffer				dq 0
+.command			db 0
+.buffer_phys			dq 0
+
+; ahci_command_list:
+; AHCI Command List
+align 128
+ahci_command_list:
+	; command header 0
+	.fis_length		db 0x10
+	.reset			db 0
+
+	.prdt_length		dw 1
+	.prdt_bytes		dd 0
+
+	.command_table		dq ahci_command_fis
+
+	.reserved:		times 4 dd 0
+
+	times 0x400 - ($-ahci_command_list) db 0		; we only use one command header
+ahci_command_list_size		= $ - ahci_command_list
 
 
 
