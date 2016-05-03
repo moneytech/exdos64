@@ -1153,10 +1153,12 @@ decode_bmp24:
 ; Out\	EAX = New color
 align 16
 alpha_blend_colors:
-	cmp dl, 4
-	jg .no_change
+	;cmp dl, 4
+	;jg .no_change
 
-	push cx
+	push rcx		; my tests have shown that PUSH RCX is a few cycles faster than PUSH CX --
+				; -- so this probably gives more performance on slow CPUs and maybe Bochs
+				; I thought PUSH CX would be faster because it's less data, but oh well..
 	and eax, 0xF0F0F0
 	and ebx, 0xF0F0F0
 
@@ -1166,7 +1168,7 @@ alpha_blend_colors:
 	and eax, 0x7F7F7F
 	and ebx, 0x7F7F7F
 	lea eax, [eax+ebx]	; probably faster than add eax, ebx
-	pop cx
+	pop rcx
 	ret
 
 .no_change:

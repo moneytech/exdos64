@@ -28,7 +28,24 @@ db "ExDOS Window Manager",0
 ; wm_get_pixel_offset
 
 use64
+
+; Constants...
 MAXIMUM_WINDOWS				= 255
+;WINDOW_COLOR				= 0x202040	; window color
+WINDOW_COLOR				= 0x404050
+;WINDOW_COLOR				= 0xFFFFFF
+WINDOW_INACTIVE_COLOR			= 0x808090
+WINDOW_BODY_COLOR			= 0xC0C0C0
+WINDOW_DEFAULT_TRANSPARENCY		= 3		; 0 = solid color, 4 = maximum transparency
+							; valid range is 0-4
+							; illegal values make solid colors
+
+; Window Events
+WM_EVENT_LOAD				= 0
+WM_EVENT_UNLOAD				= 1
+WM_EVENT_KEYPRESS			= 2
+WM_EVENT_MOUSE				= 3
+WM_EVENT_IPC				= 4
 
 align 16
 window_structure			dq 0
@@ -69,19 +86,6 @@ WINDOW_STRUCTURE:
 
 WINDOW_STRUCTURE_SIZE			= $ - WINDOW_STRUCTURE
 WINDOW_STRUCTURE_MEMORY			= WINDOW_STRUCTURE_SIZE * MAXIMUM_WINDOWS
-;WINDOW_COLOR				= 0x202040	; window color
-WINDOW_COLOR				= 0x404050
-WINDOW_INACTIVE_COLOR			= 0x808090
-WINDOW_BODY_COLOR			= 0xC0C0C0
-WINDOW_DEFAULT_TRANSPARENCY		= 0		; 0 = solid color, 4 = maximum transparency
-							; valid range is 0-4
-							; illegal values make solid colors
-
-WM_EVENT_LOAD				= 0
-WM_EVENT_UNLOAD				= 1
-WM_EVENT_KEYPRESS			= 2
-WM_EVENT_MOUSE				= 3
-WM_EVENT_IPC				= 4
 
 ; init_wm:
 ; Initializes the window manager
