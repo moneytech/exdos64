@@ -22,6 +22,8 @@ db "ACPI subsystem",0
 ; acpi_detect_batteries
 ; acpi_irq
 ; dsdt_find_object
+; acpi_read_gas
+; acpi_write_gas
 ; acpi_sleep
 ; acpi_shutdown
 ; shutdown
@@ -33,6 +35,17 @@ db "ACPI subsystem",0
 ;; These include ACPI table functions, ACPI reset and ACPI sleeping code
 ;; Later in this file is an ACPI Machine Language Virtual Machine
 ;; 
+
+
+struc acpi_gas address_space, bit_width, bit_offset, access_size, address
+{
+	.address_space		db address_space
+	.bit_width		db bit_width
+	.bit_offset		db bit_offset
+	.access_size		db access_size
+	.address		dq address
+}
+
 
 rsdp					dq 0
 acpi_root				dq 0
@@ -64,7 +77,6 @@ acpi_bst:
 
 acpi_battery				db 0		; 0 not present, 1 SBST, 2 standard ACPI AML battery
 battery_percentage			dq 0
-is_there_fadt				db 0
 
 ACPI_SDT_SIZE				= 36	; size of ACPI SDT header
 
@@ -77,10 +89,13 @@ init_acpi:
 
 	movzx rsi, word[0x40E]		; there *may* be a real mode segment pointer to the RSD PTR at 0x40E
 	shl rsi, 4
+	push rsi
 	mov rdi, .rsd_ptr
 	mov rcx, 8
 	rep cmpsb
 	je .found_rsdp
+
+	pop rsi
 
 	; first, search the EBDA for the RSDP
 	mov rsi, [ebda_base]
@@ -591,8 +606,6 @@ enable_acpi:
 	cmp rsi, 0
 	je .no_fadt
 
-	mov [is_there_fadt], 1
-
 	mov rdi, acpi_fadt
 	mov rcx, acpi_fadt_size
 	rep movsb
@@ -619,15 +632,13 @@ enable_acpi:
 	mov rsi, .acpi_event2
 	call kprint
 
-	call enable_interrupts
-
 	mov rsi, .starting_msg
 	call kprint
 
 	mov edx, [acpi_fadt.pm1a_control_block]
 	in ax, dx
-	test ax, 1
-	jnz .already_enabled
+	test ax, 1			; if ACPI is enabled --
+	jnz .already_enabled		; -- we don't need to do anything with the SMI command IO port
 
 	cmp [acpi_fadt.smi_command_port], 0
 	je .no_smi
@@ -662,23 +673,11 @@ enable_acpi:
 	mov rsi, .already_msg
 	call kprint
 
-	mov edx, [acpi_fadt.pm1a_control_block]
-	in ax, dx
-	or ax, 1
-	and ax, 0xE3FF
-	out dx, ax
-
 	ret
 
 .done_enabled:
 	mov rsi, .done_msg
 	call kprint
-
-	mov edx, [acpi_fadt.pm1a_control_block]
-	in ax, dx
-	or ax, 1
-	and ax, 0xE3FF
-	out dx, ax
 
 	ret
 
@@ -765,226 +764,8 @@ acpi_irq:
 ; Detects ACPI-compatible batteries
 
 acpi_detect_batteries:
-	pushaq
-
-	mov rsi, .starting_msg
-	call kprint
-
-	;;
-	;; TO-DO: use the ACPI SBST table for battery information
-	;;
-
-	; Find the _BIF object
-	mov rsi, .bif
-	call dsdt_find_object
-	cmp rsi, 0
-	je .no_battery
-
-	; Now we need to find the BIF package
-	; We will search for 0xA4 (AML opcode for return) because it is standard the _BIF returns a package
-
-.find_bif_package:
-	lodsb
-	cmp al, 0xA4
-	je .found_bif_package
-	jmp .find_bif_package
-
-.found_bif_package:
-	mov rdi, .bif_package
-	mov rcx, 4
-	rep movsb
-
-	mov rsi, .bif_package
-	call dsdt_find_object
-	cmp rsi, 0
-	je .no_battery
-	mov [acpi_bif_package], rsi
-
-	; Now fill up the ACPI BIF
-	mov rsi, [acpi_bif_package]
-	add rsi, 7
-	mov rdi, acpi_bif
-	mov rcx, 9
-
-.fill_bif:
-	cmp rcx, 0
-	je .find_bst
-
-	cmp byte[rsi], 0xA	; byteprefix
-	je .bif_byte
-
-	cmp byte[rsi], 0xB	; word prefix
-	je .bif_word
-
-	cmp byte[rsi], 0xC	; dword prefix
-	je .bif_dword
-
-	movzx rax, byte[rsi]
-	stosd
-	inc rsi
-	dec rcx
-	jmp .fill_bif
-
-.bif_byte:
-	movzx rax, byte[rsi+1]
-	stosd
-	add rsi, 2
-	dec rcx
-	jmp .fill_bif
-
-.bif_word:
-	movzx rax, word[rsi+1]
-	stosd
-	add rsi, 3
-	dec rcx
-	jmp .fill_bif
-
-.bif_dword:
-	mov eax, dword[rsi+1]
-	stosd
-	add rsi, 5
-	dec rcx
-	jmp .fill_bif
-
-.find_bst:
-	; Now we need to find the battery status package
-	mov rsi, .bst
-	call dsdt_find_object
-	cmp rsi, 0
-	je .no_battery
-
-	; Like above, we need to find the BST package
-	; We will search for 0xA4 (AML opcode for return) because it is standard the _BST returns a package
-
-.find_bst_package:
-	lodsb
-	cmp al, 0xA4
-	je .found_bst_package
-	jmp .find_bst_package
-
-.found_bst_package:
-	mov rdi, .bst_package
-	mov rcx, 4
-	rep movsb
-
-	mov rsi, .bst_package
-	call dsdt_find_object
-	cmp rsi, 0
-	je .no_battery
-	mov [acpi_bst_package], rsi
-
-	; Now we need to fill up the ACPI BST
-	mov rsi, [acpi_bst_package]
-	add rsi, 7
-	mov rdi, acpi_bst
-	mov rcx, 4
-
-.fill_bst:
-	cmp rcx, 0
-	je .done
-
-	cmp byte[rsi], 0xA	; byteprefix
-	je .bst_byte
-
-	cmp byte[rsi], 0xB	; word prefix
-	je .bst_word
-
-	cmp byte[rsi], 0xC	; dword prefix
-	je .bst_dword
-
-	movzx rax, byte[rsi]
-	stosd
-	inc rsi
-	dec rcx
-	jmp .fill_bst
-
-.bst_byte:
-	movzx rax, byte[rsi+1]
-	stosd
-	add rsi, 2
-	dec rcx
-	jmp .fill_bst
-
-.bst_word:
-	movzx rax, word[rsi+1]
-	stosd
-	add rsi, 3
-	dec rcx
-	jmp .fill_bst
-
-.bst_dword:
-	mov eax, dword[rsi+1]
-	stosd
-	add rsi, 5
-	dec rcx
-	jmp .fill_bst
-
-.done:
-	mov rax, 0
-	mov eax, [acpi_bst.remaining_capacity]
-	call int_to_float
-	mov [.remaining], rax
-
-	mov rax, 0
-	mov eax, [acpi_bif.full_charge_capacity]
-	call int_to_float
-	mov [.maximum], rax
-
-	mov rax, [.remaining]
-	mov rbx, [.maximum]
-	call float_div
-
-	mov rbx, [.100]
-	call float_mul
-	call float_to_int
-
-	mov [battery_percentage], rax
-
-	mov rsi, .done_msg
-	call kprint
-
-	test [acpi_bst.state], 2
-	jz .discharging
-
-	mov rsi, .charging_msg
-	call kprint
-	jmp .show_percent
-
-.discharging:
-	mov rsi, .discharging_msg
-	call kprint
-
-.show_percent:
-	mov rax, [battery_percentage]
-	call int_to_string
-	call kprint
-	mov rsi, .percent
-	call kprint
-
-	popaq
+	; This is stubbed for now, will be done when I have an AML interpreter ..
 	ret
-
-.no_battery:
-	mov rsi, .no_battery_msg
-	call kprint
-
-	mov [acpi_battery], 0
-	popaq
-	ret
-
-.starting_msg			db "[acpi] detecting batteries...",10,0
-.no_battery_msg			db "[acpi] no batteries present.",10,0
-.done_msg			db "[acpi] found battery ",0
-.charging_msg			db "charging ",0
-.discharging_msg		db "discharging ",0
-.percent			db "%",10,0
-.bif				db "_BIF",0
-.bst				db "_BST",0
-.bif_package			db "    ",0x12,0
-.bst_package			db "    ",0x12,0
-.remaining			dq 0
-.maximum			dq 0
-.100				dq 100.0
 
 ; dsdt_find_object:
 ; Finds an object within the ACPI DSDT
@@ -1044,6 +825,181 @@ dsdt_find_object:
 .dsdt				dq 0
 .end_dsdt			dq 0
 .object				dq 0
+
+; acpi_read_gas:
+; Reads from an ACPI Generic Address Structure
+; In\	RDX = Pointer to Generic Address Structure
+; Out\	RAX = Data from GAS, -1 on error
+
+acpi_read_gas:
+	cmp byte[rdx], 0
+	je .mem
+
+	cmp byte[rdx], 1
+	je .io
+
+	;cmp byte[rdx], 2	; not yet implemented
+	;je .pci
+
+.bad:
+	mov rax, -1
+	ret
+
+.mem:
+	cmp byte[rdx+3], 0
+	je .bad
+	cmp byte[rdx+3], 1
+	je .mem_byte
+	cmp byte[rdx+3], 2
+	je .mem_word
+	cmp byte[rdx+3], 3
+	je .mem_dword
+	cmp byte[rdx+3], 4
+	je .mem_qword
+	jmp .bad
+
+.mem_byte:
+	mov rdx, [rdx+4]
+	movzx rax, byte[rdx]
+	ret
+
+.mem_word:
+	mov rdx, [rdx+4]
+	movzx rax, word[rdx]
+	ret
+
+.mem_dword:
+	mov rdx, [rdx+4]
+	mov rax, 0
+	mov eax, [rdx]
+	ret
+
+.mem_qword:
+	mov rdx, [rdx+4]
+	mov rax, [rdx]
+	ret
+
+.io:
+	mov rax, 0
+	cmp byte[rdx+3], 0
+	je .bad
+	cmp byte[rdx+3], 1
+	je .io_byte
+	cmp byte[rdx+3], 2
+	je .io_word
+	cmp byte[rdx+3], 3
+	je .io_dword
+	jmp .bad
+
+.io_byte:
+	mov rdx, [rdx+4]
+	in al, dx
+	ret
+
+.io_word:
+	mov rdx, [rdx+4]
+	in ax, dx
+	ret
+
+.io_dword:
+	mov rdx, [rdx+4]
+	in eax, dx
+	ret
+
+; acpi_write_gas:
+; Writes to an ACPI Generic Address Structure
+; In\	RDX = Pointer to Generic Address Structure
+; In\	RAX = Data to write
+; Out\	RAX = -1 on success
+
+acpi_write_gas:
+	mov [.data], rax
+
+	cmp byte[rdx], 0
+	je .mem
+
+	cmp byte[rdx], 1
+	je .io
+
+	;cmp byte[rdx], 2	; not yet implemented
+	;je .pci
+
+.bad:
+	mov rax, -1
+	ret
+
+.mem:
+	cmp byte[rdx+3], 0
+	je .bad
+	cmp byte[rdx+3], 1
+	je .mem_byte
+	cmp byte[rdx+3], 2
+	je .mem_word
+	cmp byte[rdx+3], 3
+	je .mem_dword
+	cmp byte[rdx+3], 4
+	je .mem_qword
+	jmp .bad
+
+.mem_byte:
+	mov rdx, [rdx+4]
+	mov rax, [.data]
+	mov [rdx], al
+	wbinvd
+	ret
+
+.mem_word:
+	mov rdx, [rdx+4]
+	mov rax, [.data]
+	mov [rdx], ax
+	wbinvd
+	ret
+
+.mem_dword:
+	mov rdx, [rdx+4]
+	mov rax, [.data]
+	mov [rdx], eax
+	wbinvd
+	ret
+
+.mem_qword:
+	mov rdx, [rdx+4]
+	mov rax, [.data]
+	mov [rdx], rax
+	wbinvd
+	ret
+
+.io:
+	mov rax, [.data]
+	cmp byte[rdx+3], 0
+	je .bad
+	cmp byte[rdx+3], 1
+	je .io_byte
+	cmp byte[rdx+3], 2
+	je .io_word
+	cmp byte[rdx+3], 3
+	je .io_dword
+	jmp .bad
+
+.io_byte:
+	mov rdx, [rdx+4]
+	out dx, al
+	call iowait
+	ret
+
+.io_word:
+	mov rdx, [rdx+4]
+	out dx, ax
+	call iowait
+	ret
+
+.io_dword:
+	mov rdx, [rdx+4]
+	out dx, eax
+	call iowait
+	ret
+
+.data				dq 0
 
 ; acpi_sleep:
 ; Sets an ACPI sleep state
@@ -1127,10 +1083,6 @@ acpi_sleep:
 
 .done:
 	call iowait
-	pause
-	pause
-	pause
-	pause
 	call iowait
 
 	mov [acpi_sleeping], 0
@@ -1180,75 +1132,27 @@ acpi_reset:
 	mov rsi, .starting_msg
 	call kprint
 
+	call disable_interrupts
+
 	cmp [acpi_fadt.revision], 2		; only exists in version 2+ of the FADT
 	jl .bad
-
 	test [acpi_fadt.flags], 0x400		; reset register is an optional feature -- make sure it's supported
 	jz .bad
 
-	call disable_interrupts
-
-	; ACPI specs say it can only be mapped in memory, I/O or PCI
-	cmp [acpi_reset_register.address_space], 0
-	je .memory
-
-	cmp [acpi_reset_register.address_space], 1
-	je .io
-
-	cmp [acpi_reset_register.address_space], 2
-	je .pci
-
-	jmp .bad
-
-.memory:
-	mov rsi, .memory_msg
-	call kprint
-
-	mov rdi, [acpi_reset_register.address]
-	mov al, [acpi_reset_value]
-	mov [rdi], al
-	jmp .wait
-
-.io:
-	mov rsi, .io_msg
-	call kprint
-
-	mov rdx, [acpi_reset_register.address]
-	mov al, [acpi_reset_value]
-	out dx, al
-	jmp .wait
-
-.pci:					; NEEDS TESTING!
-					; I don't have any PCs to test this on.
-	mov rsi, .pci_msg
-	call kprint
-
-	mov al, 0
-	mov ah, byte[acpi_reset_register.address]
-	mov bl, byte[acpi_reset_register.address+1]
-	mov bh, byte[acpi_reset_register.address+2]
-	movzx rdx, [acpi_reset_value]
-	call pci_write_dword
-
-.wait:
-	; For I/O bus, wait for the I/O to complete
-	call iowait
-
-	; For memory, flush caches
-	call flush_caches
+	; simply write to the reset register
+	movzx rax, [acpi_reset_value]
+	mov rdx, acpi_fadt.reset_register
+	call acpi_write_gas
 
 .bad:
-	call disable_interrupts
 	mov rsi, .fail_msg
 	call kprint
 
-	mov al, 0xFE
+	mov al, 0xFE		; try ps/2 method
 	out 0x64, al
-	call iowait
 
-	mov al, 3
+	mov al, 3		; still not? try quick reset method
 	out 0x92, al
-	call iowait
 
 	; If still not reset, triple fault the CPU
 	lidt [.idtr]
@@ -1258,10 +1162,7 @@ acpi_reset:
 .idtr:				dw 0
 				dq 0
 .starting_msg			db "[acpi] attempting ACPI reset...",10,0
-.memory_msg			db "[acpi] memory-mapped reset.",10,0
-.io_msg				db "[acpi] I/O bus reset.",10,0
-.pci_msg			db "[acpi] PCI bus reset.",10,0
-.fail_msg			db "[acpi] warning: failed, falling back to PS/2 reset...",10,0
+.fail_msg			db "[acpi] warning: failed, falling back to traditional reset...",10,0
 
 ; shutdown:
 ; Shuts down the PC
@@ -1283,7 +1184,7 @@ shutdown:
 	sub rax, 175
 	sub rbx, 64
 
-	; "It's now safe to power off your PC."
+	; TO-DO: Make this window say "It's now safe to power off your PC."
 	mov si, 350
 	mov di, 128
 	mov r10, .win_title
@@ -1291,7 +1192,8 @@ shutdown:
 	call wm_create_window
 
 	call acpi_shutdown
-	call send_eoi
+	call send_eoi		; send the EOI of ACPI's SCI IRQ -- let mouse and keyboard IRQs happen
+				; so that users can drag around the "It's now safe to power off your PC." window.
 
 .hang:
 	sti
@@ -1358,16 +1260,13 @@ acpi_fadt:
 	.reserved2		rb 1
 	.flags			rd 1
 
-acpi_reset_register:
-	.address_space		rb 1
-	.bit_width		rb 1
-	.bit_offset		rb 1
-	.access_size		rb 1
-	.address		rq 1
+	.reset_register:	some acpi_gas 0,0,0,0,0
 
-acpi_reset_value		rb 1
+	acpi_reset_value	rb 1
+
 end_of_acpi_fadt:
 acpi_fadt_size			= end_of_acpi_fadt - acpi_fadt
+
 
 ;; 
 ;; This part of the file is the core of ACPI Machine Language Virtual Machine
