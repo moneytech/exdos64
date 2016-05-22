@@ -18,11 +18,11 @@ db "ExDOS GUI Core",0
 ; redraw_background
 ; gui_background_event_handler
 
-GUI_DEFAULT_COLOR		= 0x2020A0		; default color when wallpaper is unavailable
+GUI_DEFAULT_COLOR		= 0xA2B6ED		; default color when wallpaper is unavailable
 GUI_DEFAULT_MOUSE_COLOR		= 0x000000
 MENU_COLOR			= 0x00A010
 TASKBAR_CONTROLS_COLOR		= 0x404080
-DEFAULT_TASKBAR_TRANSPARENCY	= 3
+DEFAULT_TASKBAR_TRANSPARENCY	= 1
 
 align 16
 gui_wallpaper			dq 0

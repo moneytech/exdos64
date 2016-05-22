@@ -310,6 +310,7 @@ kmain64:
 	call map_vbe_framebuffer		; initialize a buffer for VBE
 	call calculate_cpu_speed		; calculate CPU speed
 	;call init_mtrr				; initialize MTRR -- has problems on at least one PC
+	call init_usb				; initialize USB
 	call init_storage			; initialize storage devices
 	call init_vfs				; initialize the virtual file system
 	call init_user				; initialize usermode stuff
@@ -352,6 +353,8 @@ include				"os/drivers.asm"		; Driver API
 include				"os/mtrr.asm"			; MTRR manager
 include				"ex86/exdos64/exdos64.asm"	; x86 emulator
 include				"os/gui.asm"			; Graphical User Interface
+include				"os/usb.asm"			; Generic USB interface
+include				"os/uhci.asm"			; UHCI driver
 
 align 16			; stack should be aligned
 kstack:				rb KSTACK_SIZE

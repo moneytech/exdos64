@@ -67,8 +67,8 @@ db "Generic resolution-independent graphics device interface",0
 
 use64
 align 16
-font_data:			;include "os/glaux-mono.asm"	; Glaux Mono -- public domain
-				file "os/font.bin"		; Alotware font
+font_data:			include "os/glaux-mono.asm"	; Glaux Mono -- public domain
+				;file "os/font.bin"		; Alotware font
 
 align 16
 text_background			dd 0

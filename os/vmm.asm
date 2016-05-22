@@ -175,21 +175,10 @@ vmm_set_pat:
 ; Flushes caches
 
 flush_caches:
-	pushaq
-
-	mov rax, cr0
-	and eax, 0x9FFEFFFF	; re-enable caching
-	mov cr0, rax
-
-	mov rax, cr3		; this flushes caches
+	push rax
+	mov rax, cr3
 	mov cr3, rax
-
-	mov rax, cr4		; this too
-	mov cr4, rax
-
-	wbinvd
-
-	popaq
+	pop rax
 	ret
 
 ; vmm_is_page_free:

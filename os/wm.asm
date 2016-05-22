@@ -32,13 +32,16 @@ use64
 ; Constants...
 MAXIMUM_WINDOWS				= 255
 ;WINDOW_COLOR				= 0x202040	; window color
-WINDOW_COLOR				= 0x404050
-;WINDOW_COLOR				= 0xFFFFFF
-WINDOW_INACTIVE_COLOR			= 0x808090
-WINDOW_BODY_COLOR			= 0xC0C0C0
-WINDOW_DEFAULT_TRANSPARENCY		= 3		; 0 = solid color, 4 = maximum transparency
+;WINDOW_COLOR				= 0x202020
+WINDOW_COLOR				= 0xC0C0C0
+WINDOW_TITLE_COLOR			= 0x000000
+WINDOW_INACTIVE_COLOR			= 0x707070
+WINDOW_INACTIVE_TITLE_COLOR		= 0x000000
+WINDOW_BODY_COLOR			= 0xD0D0D0
+WINDOW_DEFAULT_TRANSPARENCY		= 1		; 0 = solid color, 4 = maximum transparency
 							; valid range is 0-4
 							; illegal values make solid colors
+WINDOW_CLOSE_COLOR			= 0xB00000
 
 ; Window Events
 WM_EVENT_LOAD				= 0
@@ -190,11 +193,11 @@ wm_create_handle:
 	mov [rax+WINDOW_STRUCTURE.y], dx
 	mov rdx, [vbe_screen.width]
 	sub dx, [.width]
-	sub dx, 8
+	;sub dx, 8
 	mov [rax+WINDOW_STRUCTURE.max_x], dx
 	mov rdx, [vbe_screen.height]
 	sub dx, [.height]
-	sub dx, 28
+	sub dx, 32
 	mov [rax+WINDOW_STRUCTURE.max_y], dx
 
 	mov rdi, rax
@@ -420,7 +423,7 @@ wm_redraw:
 	mov [.fg], ecx
 
 	mov ebx, 0
-	mov ecx, 0xFFFFFF
+	mov ecx, WINDOW_INACTIVE_TITLE_COLOR
 	call set_text_color
 
 	call lock_screen		; lock the screen while we modify it
@@ -448,25 +451,33 @@ wm_redraw:
 	mov ax, [.x]
 	mov bx, [.y]
 	mov si, [.width]
-	add si, 8
-	mov di, [.height]
-	add di, 28
+	mov di, 32
 	mov edx, WINDOW_INACTIVE_COLOR
 	mov cl, [window_transparency]
-	call alpha_fill_rect
+	call alpha_fill_rect			; title bar
 
 	mov rsi, [.title]
 	mov cx, [.x]
 	mov dx, [.y]
-	add cx, 4
-	add dx, 4
+	add cx, 8
+	add dx, 8
 	call print_string_transparent
+
+	mov ax, [.x]
+	mov bx, [.y]
+	add bx, 8
+	mov dx, [.width]
+	add ax, dx
+	sub ax, 24
+	mov si, 16
+	mov di, 16
+	mov edx, WINDOW_CLOSE_COLOR
+	call fill_rect
 
 	mov rdx, [.buffer]
 	mov ax, [.x]
 	mov bx, [.y]
-	add ax, 4
-	add bx, 24
+	add bx, 32
 	mov si, [.width]
 	mov di, [.height]
 	call blit_buffer
@@ -493,25 +504,37 @@ wm_redraw:
 	mov ax, [.x]
 	mov bx, [.y]
 	mov si, [.width]
-	add si, 8
-	mov di, [.height]
-	add di, 28
+	mov di, 32
 	mov edx, WINDOW_COLOR
 	mov cl, [window_transparency]
-	call alpha_fill_rect
+	call alpha_fill_rect			; title bar
+
+	mov ebx, 0
+	mov ecx, WINDOW_TITLE_COLOR
+	call set_text_color
 
 	mov rsi, [.title]
 	mov cx, [.x]
 	mov dx, [.y]
-	add cx, 4
-	add dx, 4
+	add cx, 8
+	add dx, 8
 	call print_string_transparent
+
+	mov ax, [.x]
+	mov bx, [.y]
+	add bx, 8
+	mov dx, [.width]
+	add ax, dx
+	sub ax, 24
+	mov si, 16
+	mov di, 16
+	mov edx, WINDOW_CLOSE_COLOR
+	call fill_rect
 
 	mov rdx, [.buffer]
 	mov ax, [.x]
 	mov bx, [.y]
-	add ax, 4
-	add bx, 24
+	add bx, 32
 	mov si, [.width]
 	mov di, [.height]
 	call blit_buffer
@@ -699,9 +722,9 @@ wm_is_mouse_on_window:
 	mov [.x], ax
 	mov [.y], bx
 	add ax, si
-	add ax, 8
+	;add ax, 8
 	add bx, di
-	add bx, 28
+	add bx, 32
 	mov [.end_x], ax
 	mov [.end_y], bx
 
@@ -761,8 +784,8 @@ wm_is_mouse_on_window_title:
 	mov [.x], ax
 	mov [.y], bx
 	add ax, si
-	add ax, 8
-	add bx, 24
+	;add ax, 8
+	add bx, 32
 	mov [.end_x], ax
 	mov [.end_y], bx
 

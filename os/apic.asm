@@ -228,8 +228,7 @@ init_smp:
 	call lapic_write_register		; send SIPI
 	call flush_caches
 
-	mov rcx, 0
-	not rcx
+	mov rcx, 0xFFFFFFF
 
 .wait_for_cpu:
 	cmp [ap_init.done], 0
@@ -562,6 +561,15 @@ use64
 	mov eax, 0xFFFFFFFF
 	call lapic_write_register
 
+	mov rax, 0
+	mov rcx, 0xB0
+	call lapic_write_register	; just send an EOI
+	mov rax, 0
+	mov rcx, 0xB0
+	call lapic_write_register	; just send an EOI
+	mov rax, 0
+	mov rcx, 0xB0
+	call lapic_write_register	; just send an EOI
 	mov rax, 0
 	mov rcx, 0xB0
 	call lapic_write_register	; just send an EOI
